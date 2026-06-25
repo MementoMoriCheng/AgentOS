@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package agentos;
 
-option go_package = "agentos/kernel/internal/pb";
+option go_package = "agentos/pb";
 
 service Kernel {
   rpc StartSession(StartSessionRequest) returns (StartSessionResponse);

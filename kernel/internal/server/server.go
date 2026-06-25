@@ -11,7 +11,7 @@ import (
 	"agentos/kernel/internal/audit"
 	"agentos/kernel/internal/auth"
 	"agentos/kernel/internal/eventbus"
-	"agentos/kernel/internal/pb"
+	"agentos/pb"
 	"agentos/kernel/internal/pipeline"
 	"agentos/kernel/internal/policy"
 	"agentos/kernel/internal/sanitize"

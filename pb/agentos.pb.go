@@ -642,7 +642,8 @@ const file_proto_agentos_proto_rawDesc = "" +
 	"\n" +
 	"EndSession\x12\x1a.agentos.EndSessionRequest\x1a\x1b.agentos.EndSessionResponse\x12D\n" +
 	"\x0fSubscribeEvents\x12\x1f.agentos.SubscribeEventsRequest\x1a\x0e.agentos.Event0\x01\x129\n" +
-	"\x10EmitRuntimeEvent\x12\x0e.agentos.Event\x1a\x15.agentos.EmitResponseB\x1cZ\x1aagentos/kernel/internal/pbb\x06proto3"
+	"\x10EmitRuntimeEvent\x12\x0e.agentos.Event\x1a\x15.agentos.EmitResponseB\fZ\n" +
+	"agentos/pbb\x06proto3"
 
 var (
 	file_proto_agentos_proto_rawDescOnce sync.Once

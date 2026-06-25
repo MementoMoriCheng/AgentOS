@@ -7,7 +7,7 @@ import (
 
 	"google.golang.org/grpc/metadata"
 
-	pb "agentos/kernel/internal/pb"
+	pb "agentos/pb"
 )
 
 // fakeSubscribeStream 实现 pb.Kernel_SubscribeEventsServer（= grpc.ServerStreamingServer[Event]）。
