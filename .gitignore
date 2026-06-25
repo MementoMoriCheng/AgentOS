@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+*.egg-link
+
+# Go
+*.test
+*.out
+
+# Node / 前端构建产物
+node_modules/
+gateway/web/dist/
+
+# brainstorm/可视化缓存
+.superpowers/
+
+# 误产生的文件
+nul
+
+# 审计/会话运行时产物
+audit/
+*.log
+*.sock
+
+# 编辑器
+.vscode/
+.idea/
