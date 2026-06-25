@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -16,17 +17,18 @@ import (
 	"agentos/gateway/internal/api"
 	"agentos/gateway/internal/kclient"
 	"agentos/gateway/internal/runmgr"
+	"agentos/gateway/web"
 	"agentos/gateway/internal/ws"
 	pb "agentos/pb"
 )
 
 func main() {
-	fs := flag.NewFlagSet("agentos-gateway", flag.ExitOnError)
-	socket := fs.String("kernel-socket", "./agentos.sock", "kernel unix socket")
-	httpAddr := fs.String("http", "127.0.0.1:8080", "HTTP listen addr (localhost-only)")
-	runtimeCmd := fs.String("runtime", "python -m agentos_runtime", "runtime command")
-	watchdog := fs.Duration("watchdog", 5*time.Minute, "per-run timeout")
-	fs.Parse(os.Args[1:])
+	flags := flag.NewFlagSet("agentos-gateway", flag.ExitOnError)
+	socket := flags.String("kernel-socket", "./agentos.sock", "kernel unix socket")
+	httpAddr := flags.String("http", "127.0.0.1:8080", "HTTP listen addr (localhost-only)")
+	runtimeCmd := flags.String("runtime", "python -m agentos_runtime", "runtime command")
+	watchdog := flags.Duration("watchdog", 5*time.Minute, "per-run timeout")
+	flags.Parse(os.Args[1:])
 
 	// 安全：强制 localhost-only。若 httpAddr 不是 loopback，拒绝启动。
 	host, _, err := net.SplitHostPort(*httpAddr)
@@ -88,6 +90,11 @@ func main() {
 	mux.Handle("/api/events", websocket.Handler(func(ws *websocket.Conn) {
 		h.ServeEventsWS(netWSConn{ws})
 	}))
+
+	// 托管前端静态文件（//go:embed 打包进二进制）。
+	dist, _ := fs.Sub(web.Dist, "dist")
+	fileServer := http.FileServer(http.FS(dist))
+	mux.Handle("/", fileServer)
 
 	ln, err := net.Listen("tcp", *httpAddr)
 	if err != nil {

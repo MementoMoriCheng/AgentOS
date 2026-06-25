@@ -3,7 +3,6 @@ package kclient
 import (
 	"context"
 	"io"
-	"runtime"
 	"sync"
 
 	"google.golang.org/grpc"
@@ -25,11 +24,9 @@ func New(socket string) *Client {
 	return &Client{socket: socket}
 }
 
-// dialTarget 按平台拼 gRPC target：Windows 用 file:// 前缀，其它用 unix:。
+// dialTarget 拼 gRPC unix socket target。
+// Go grpc 在所有平台都用 unix: 前缀（与 Python grpc 的 file:// 不同）。
 func dialTarget(socket string) string {
-	if runtime.GOOS == "windows" {
-		return "file://" + socket
-	}
 	return "unix:" + socket
 }
 

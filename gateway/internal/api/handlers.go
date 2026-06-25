@@ -3,8 +3,10 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"agentos/gateway/internal/runmgr"
 	"agentos/gateway/internal/ws"
@@ -40,7 +42,11 @@ func (h *Handlers) SubmitRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad json", http.StatusBadRequest)
 		return
 	}
-	run, err := h.mgr.Submit(runmgr.SubmitReq{Task: req.Task, Policy: req.Policy, Sanitization: req.Sanitization})
+	run, err := h.mgr.Submit(runmgr.SubmitReq{
+		Task:         req.Task,
+		Policy:       h.resolveFile(req.Policy, h.policyDirs),
+		Sanitization: h.resolveFile(req.Sanitization, h.sanitizationDirs),
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -120,6 +126,26 @@ func (h *Handlers) ServeEventsWS(conn WSConn) {
 			return
 		}
 	}
+}
+
+// resolveFile 把提交的 policy/sanitization 名解析成受信目录下的完整路径。
+// 若 name 已是存在的路径（含分隔符或绝对路径），原样返回；
+// 否则在 dirs 里查找 name，返回首个匹配的完整路径。
+func (h *Handlers) resolveFile(name string, dirs []string) string {
+	if name == "" {
+		return name
+	}
+	// 已含路径分隔符 → 视为完整路径，原样返回
+	if filepath.IsAbs(name) || strings.ContainsRune(name, filepath.Separator) || strings.ContainsRune(name, '/') {
+		return name
+	}
+	for _, dir := range dirs {
+		full := filepath.Join(dir, name)
+		if _, err := os.Stat(full); err == nil {
+			return full
+		}
+	}
+	return name // 找不到也返回原名（让 Kernel 拒绝并报错）
 }
 
 // scanYaml 扫描目录下的 *.yaml，返回去重的文件名列表。
