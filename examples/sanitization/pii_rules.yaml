@@ -1,0 +1,11 @@
+fields:
+  - name: "id_card"
+    strategy: mask
+  - name: "phone"
+    strategy: mask
+    keep_prefix: 3
+    keep_suffix: 4
+  - name: "customer_id"
+    strategy: hash
+  - name: "remark"
+    strategy: redact
