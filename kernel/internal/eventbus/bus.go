@@ -29,7 +29,8 @@ type Event struct {
 // Bus 是事件总线接口。
 type Bus interface {
 	Publish(event Event)
-	Subscribe(handler func(Event))
+	// Subscribe 注册一个订阅者，返回取消订阅的函数。
+	Subscribe(handler func(Event)) func()
 }
 
 // InProcess 同步分发事件给所有订阅者。
@@ -43,10 +44,18 @@ func NewInProcess() *InProcess {
 	return &InProcess{}
 }
 
-func (b *InProcess) Subscribe(h func(Event)) {
+func (b *InProcess) Subscribe(h func(Event)) func() {
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	id := len(b.handlers)
 	b.handlers = append(b.handlers, h)
+	b.mu.Unlock()
+	return func() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		if id < len(b.handlers) {
+			b.handlers[id] = nil // 置空；Publish 跳过 nil
+		}
+	}
 }
 
 func (b *InProcess) Publish(e Event) {
@@ -56,6 +65,9 @@ func (b *InProcess) Publish(e Event) {
 	handlers := append([]func(Event){}, b.handlers...)
 	b.mu.Unlock()
 	for _, h := range handlers {
+		if h == nil {
+			continue // 已取消订阅
+		}
 		func() {
 			defer func() { _ = recover() }()
 			h(e)
