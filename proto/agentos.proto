@@ -1,0 +1,73 @@
+syntax = "proto3";
+
+package agentos;
+
+option go_package = "agentos/kernel/internal/pb";
+
+service Kernel {
+  rpc StartSession(StartSessionRequest) returns (StartSessionResponse);
+  rpc CallTool(CallToolRequest) returns (CallToolResponse);
+  // 结束会话：网关在 run 结束时调用，Kernel 据此发布 session.ended。
+  rpc EndSession(EndSessionRequest) returns (EndSessionResponse);
+  // 订阅全量事件流（server-streaming）。网关用它收 Kernel+Runtime 事件。
+  rpc SubscribeEvents(SubscribeEventsRequest) returns (stream Event);
+  // Runtime 把推理事件灌进 Kernel EventBus（事件枢纽统一在 Kernel）。
+  rpc EmitRuntimeEvent(Event) returns (EmitResponse);
+}
+
+message StartSessionRequest {
+  string policy_path = 1;
+  string sanitization_path = 2;
+}
+
+message StartSessionResponse {
+  string session_id = 1;
+}
+
+message CallToolRequest {
+  string session_id = 1;
+  string tool = 2;
+  string params_json = 3;
+}
+
+message CallToolResponse {
+  bool allowed = 1;
+  bool errored = 2;
+  string message = 3;
+  string result_json = 4;
+}
+
+message EndSessionRequest {
+  string session_id = 1;
+  string reason = 2;
+}
+
+message EndSessionResponse {}
+
+message SubscribeEventsRequest {
+  // 预留过滤字段；MVP 网关全收后自己按 session/run 过滤。
+  string session_id = 1;
+}
+
+message EmitResponse {}
+
+// Event 是统一事件信封。对齐 kernel/internal/eventbus.Event。
+message Event {
+  string type = 1;            // tool.called | tool.denied | ... | run.started | runtime.step | run.ended
+  string session_id = 2;
+  string run_id = 3;          // Runtime 族事件才有
+  string tool = 4;
+  string params_json = 5;     // JSON
+  string result_json = 6;     // JSON（已脱敏）
+  string identity = 7;
+  int64 timestamp = 8;        // ns
+  // 脱敏摘要：哪些字段被哪种策略处理，不含原始值。
+  repeated FieldSanitization sanitize = 9;
+  // Runtime 族事件的自由负载（thought / final_answer / tool_calls / termination ...）。
+  string payload_json = 10;
+}
+
+message FieldSanitization {
+  string field = 1;
+  string strategy = 2;        // mask | hash | redact
+}
