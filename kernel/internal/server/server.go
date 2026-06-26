@@ -53,9 +53,8 @@ func New(auditDir string) *Server {
 
 // StartSession 加载 Policy（含白名单校验）+ Sanitizer，建 Session + Pipeline + EventBus + 审计订阅。
 func (s *Server) StartSession(ctx context.Context, req *pb.StartSessionRequest) (*pb.StartSessionResponse, error) {
-	// Kernel 认证第二层：Policy 路径白名单。允许 ./policies 或 ./examples/policies。
-	if !auth.IsTrustedPolicy(req.PolicyPath, "./policies") &&
-		!auth.IsTrustedPolicy(req.PolicyPath, "./examples/policies") {
+	// Kernel 认证第二层：Policy 路径白名单。受信目录为 ./examples/policies。
+	if !auth.IsTrustedPolicy(req.PolicyPath, "./examples/policies") {
 		return nil, fmt.Errorf("untrusted policy path: %s", req.PolicyPath)
 	}
 

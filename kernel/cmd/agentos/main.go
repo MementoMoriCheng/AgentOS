@@ -37,7 +37,7 @@ func cmdServe(args []string) {
 	fs.Parse(args)
 
 	os.MkdirAll(*auditDir, 0755)
-	os.MkdirAll("./policies", 0755)
+	os.MkdirAll("./examples/policies", 0755)
 	_ = os.Remove(*socket) // 清上次残留 socket
 
 	lis, err := net.Listen("unix", *socket)

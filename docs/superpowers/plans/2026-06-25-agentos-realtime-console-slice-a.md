@@ -19,7 +19,7 @@
 - **模块路径**：Go module = `agentos`。Kernel 包在 `agentos/kernel/...`，Gateway 包在 `agentos/gateway/...`。
 - **commit 粒度**：每个 Step 的 commit 用 conventional commits（`feat:` / `test:` / `chore:` / `docs:`）。
 - **TDD**：每个功能先写失败测试，跑红，再写实现，跑绿，commit。安全相关必带对抗断言。
-- **protoc 工具链**：proto 在 `proto/agentos.proto`；Go 生成到 `kernel/internal/pb/`；Python 生成到 `runtime/agentos_runtime/pb/`。生成命令见 Task 1。
+- **protoc 工具链**：proto 源在 `pb/agentos.proto`；Go 生成到 `pb/`；Python 生成到 `runtime/agentos_runtime/pb/`。生成命令见 Task 1。
 - **Python 命令**：本机 shell 里 `python` 可能不可用，执行前先确认（`python --version` 或 `python3 --version` 或 `py --version`），用可用的那个；下文统一写 `python`，按实际替换。
 - **不预留蓝图 B**：不加多租户/沙箱池（YAGNI，A2 近中期不需要）。
 
@@ -28,7 +28,7 @@
 ## 文件结构总览
 
 **Kernel（改动，全加性）：**
-- `proto/agentos.proto` — 新增 Event message + 2 RPC
+- `pb/agentos.proto` — 新增 Event message + 2 RPC
 - `kernel/internal/pb/*.pb.go` — protoc 重生成
 - `kernel/internal/sanitize/sanitizer.go` — `Sanitize` 返回 `Result{Data, Summary}`；新增 `Summary` 类型
 - `kernel/internal/sanitize/sanitizer_test.go` — 摘要断言
@@ -70,13 +70,13 @@
 ## Task 1: Kernel proto 扩展 — Event message + 2 RPC
 
 **Files:**
-- Modify: `proto/agentos.proto`
+- Modify: `pb/agentos.proto`
 - Regenerate: `kernel/internal/pb/agentos.pb.go`, `kernel/internal/pb/agentos_grpc.pb.go`
 - Regenerate: `runtime/agentos_runtime/pb/agentos_pb2.py`, `runtime/agentos_runtime/pb/agentos_pb2_grpc.py`
 
 - [ ] **Step 1: 编辑 proto，加 Event message 和两个 RPC**
 
-把 `proto/agentos.proto` 的 service 与 message 部分改为（保留原有 4 个 message，追加新内容）：
+把 `pb/agentos.proto` 的 service 与 message 部分改为（保留原有 4 个 message，追加新内容）：
 
 ```proto
 syntax = "proto3";
@@ -150,20 +150,20 @@ message FieldSanitization {
 Run:
 ```bash
 cd /e/Project/Agent-Project/AgentOS
-protoc --go_out=. --go_opt=module=agentos \
+protoc -I pb --go_out=. --go_opt=module=agentos \
   --go-grpc_out=. --go-grpc_opt=module=agentos \
-  proto/agentos.proto
+  pb/agentos.proto
 ```
-Expected: `kernel/internal/pb/agentos.pb.go` 与 `agentos_grpc.pb.go` 被更新，含 `Event`/`SubscribeEventsRequest`/`EmitResponse`/`FieldSanitization` 与 `Kernel_SubscribeEventsServer` 流类型。若 protoc 未安装，先 `go install google.golang.org/protobuf/cmd/protoc-gen-go@latest` 和 `google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest`，并确保 `$GOPATH/bin` 在 PATH。
+Expected: `pb/agentos.pb.go` 与 `pb/agentos_grpc.pb.go` 被更新，含 `Event`/`SubscribeEventsRequest`/`EmitResponse`/`FieldSanitization` 与 `Kernel_SubscribeEventsServer` 流类型。若 protoc 未安装，先 `go install google.golang.org/protobuf/cmd/protoc-gen-go@latest` 和 `google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest`，并确保 `$GOPATH/bin` 在 PATH。
 
 - [ ] **Step 3: 重生成 Python pb**
 
 Run:
 ```bash
-python -m grpc_tools.protoc -I proto \
+python -m grpc_tools.protoc -I pb \
   --python_out=runtime/agentos_runtime/pb \
   --grpc_python_out=runtime/agentos_runtime/pb \
-  proto/agentos.proto
+  pb/agentos.proto
 ```
 （`grpc_tools` 来自 `pip install grpcio-tools`。）
 Expected: `runtime/agentos_runtime/pb/agentos_pb2.py` 含 `Event` 等；`_pb2_grpc.py` 含 `KernelStub.SubscribeEvents`/`EmitRuntimeEvent`。

@@ -73,7 +73,7 @@ func main() {
 	}()
 
 	h := api.New(mgr, hub,
-		[]string{"./policies", "./examples/policies"},
+		[]string{"./examples/policies"},
 		[]string{"./examples/sanitization"},
 	)
 	mux := http.NewServeMux()

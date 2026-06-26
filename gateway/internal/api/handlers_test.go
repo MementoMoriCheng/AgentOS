@@ -24,7 +24,7 @@ func newTestHandlers(t *testing.T) (*Handlers, *runmgr.Manager) {
 	})
 	mgr.SetSessionHooks(func(string, string) (string, error) { return "s1", nil }, func(string, string) error { return nil })
 	hub := ws.New()
-	h := New(mgr, hub, []string{"./policies"}, []string{"./examples/sanitization"})
+	h := New(mgr, hub, []string{"./examples/policies"}, []string{"./examples/sanitization"})
 	return h, mgr
 }
 

@@ -104,10 +104,8 @@ AgentOS/
 ├── runtime/             # Python 运行时（DeepSeek + ReAct）
 │   └── agentos_runtime/
 ├── web-src/             # React 前端（Vite）
-├── proto/               # gRPC 契约
-├── pb/                  # 生成的 protobuf（Go）
-├── policies/            # 受信 Policy 目录（Kernel 白名单）
-├── examples/            # demo 工作区 + 策略 + 脱敏规则
+├── pb/                  # gRPC 契约（.proto 源 + Go 生成代码）
+├── examples/            # demo 工作区 + 策略 + 脱敏规则（受信目录）
 └── docs/superpowers/    # 设计文档 + 实现计划（中文）
 ```
 
@@ -157,7 +155,7 @@ go run ./gateway/cmd/agentos-gateway -kernel-socket ./agentos.sock -http 127.0.0
 
 **终端 3 — 用控制台**：
 打开浏览器访问 `http://127.0.0.1:8080`，提交一个 run：
-- 选 policy：`policies/data_analyst.yaml`
+- 选 policy：`examples/policies/data_analyst.yaml`
 - 选 sanitization：`examples/sanitization/pii_rules.yaml`
 - 任务示例：`Read examples/workspace/sales.csv, compute the total amount, write to examples/workspace/out/total.txt`
 

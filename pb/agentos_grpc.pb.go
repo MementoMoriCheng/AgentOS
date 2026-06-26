@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             v7.35.1
-// source: proto/agentos.proto
+// source: agentos.proto
 
 package pb
 
@@ -279,5 +279,5 @@ var Kernel_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
-	Metadata: "proto/agentos.proto",
+	Metadata: "agentos.proto",
 }
