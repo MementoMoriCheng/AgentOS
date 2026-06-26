@@ -71,11 +71,17 @@ func (r *Run) alreadyEnded() bool {
 	return false
 }
 
+// EventSink 是事件扇出接口（由 ws.Hub 实现）。避免 runmgr 直接依赖 ws 包。
+type EventSink interface {
+	RouteEvent(e *pb.Event)
+}
+
 // Manager 管理 run 的生命周期：fork Runtime、看门狗、事件环、兜底收尾。
 type Manager struct {
 	cfg   Config
 	mu    sync.Mutex
 	runs  map[string]*Run
+	sink  EventSink // 事件扇出（hub）；可为 nil（测试时）
 	start func(policy, san string) (string, error) // 注入：调 Kernel StartSession
 	end   func(sessionID, reason string) error     // 注入：调 Kernel EndSession
 }
@@ -92,6 +98,21 @@ func New(cfg Config) *Manager {
 func (m *Manager) SetSessionHooks(start func(string, string) (string, error), end func(string, string) error) {
 	m.start = start
 	m.end = end
+}
+
+// SetEventSink 注入事件扇出（由 main 用 ws.Hub 设置）。
+// 兜底 run.ended 等本地产生的事件也通过 sink 扇出，避免 WS 客户端错过。
+func (m *Manager) SetEventSink(sink EventSink) {
+	m.sink = sink
+}
+
+// emitEvent 把事件加进 run 事件环 + 扇出给 sink（hub）。
+// 统一入口，确保兜底事件也被订阅者收到。
+func (m *Manager) emitEvent(run *Run, e *pb.Event) {
+	run.appendEvent(e)
+	if m.sink != nil {
+		m.sink.RouteEvent(e)
+	}
 }
 
 // Submit 提交一个 run：建 session、fork Runtime、登记。
@@ -123,7 +144,7 @@ func (m *Manager) Submit(req SubmitReq) (*Run, error) {
 
 	if err := cmd.Start(); err != nil {
 		run.Status = "ended"
-		run.appendEvent(fallbackEnded(runID, sessID, "crashed"))
+		m.emitEvent(run, fallbackEnded(runID, sessID, "crashed"))
 		return run, nil
 	}
 	go m.wait(run)
@@ -142,12 +163,16 @@ func (m *Manager) wait(run *Run) {
 		termination = "timeout"
 	}
 
+	needFallback := false
 	run.mu.Lock()
 	if !run.alreadyEndedLocked() {
-		run.events = append(run.events, fallbackEnded(run.RunID, run.SessionID, termination))
+		needFallback = true
 	}
 	run.Status = "ended"
 	run.mu.Unlock()
+	if needFallback {
+		m.emitEvent(run, fallbackEnded(run.RunID, run.SessionID, termination))
+	}
 
 	_ = m.end(run.SessionID, termination)
 }
@@ -186,7 +211,8 @@ func (m *Manager) Events(runID string) []*pb.Event {
 	return r.Events()
 }
 
-// RouteEvent 由 WS 订阅回调调用，把 Kernel 事件按 run_id 投到对应事件环。
+// RouteEvent 把事件投到对应 run 的事件环 + 扇出给 sink（hub）。
+// 由 main 的 Kernel 订阅回调调用。是事件的唯一汇聚点。
 func (m *Manager) RouteEvent(e *pb.Event) {
 	if e.RunId == "" {
 		return
@@ -195,7 +221,7 @@ func (m *Manager) RouteEvent(e *pb.Event) {
 	if !ok {
 		return
 	}
-	r.appendEvent(e)
+	m.emitEvent(r, e)
 }
 
 // newRunID 生成 16 字节 hex 的 run id（crypto/rand，无需外部依赖）。

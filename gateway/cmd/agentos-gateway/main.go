@@ -49,6 +49,7 @@ func main() {
 	)
 
 	hub := ws.New()
+	mgr.SetEventSink(hub) // manager 作为事件汇聚点，兜底事件也经 hub 扇出
 
 	// 订阅 Kernel 全量事件流 → 投到 runmgr 事件环 + hub 扇出。
 	// 流断时自动重连（指数退避）。
@@ -56,8 +57,7 @@ func main() {
 		backoff := time.Second
 		for {
 			err := kc.Subscribe(context.Background(), "", func(e *pb.Event) {
-				mgr.RouteEvent(e)
-				hub.RouteEvent(e)
+				mgr.RouteEvent(e) // manager 是事件汇聚点：进环 + 扇出 hub
 			})
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "subscribe stream ended: %v; reconnecting in %v\n", err, backoff)
@@ -87,9 +87,16 @@ func main() {
 	mux.HandleFunc("/api/run", h.GetRun)
 	mux.HandleFunc("/api/policies", h.ListPolicies)
 	mux.HandleFunc("/api/sanitizations", h.ListSanitizations)
-	mux.Handle("/api/events", websocket.Handler(func(ws *websocket.Conn) {
-		h.ServeEventsWS(netWSConn{ws})
-	}))
+	// WS 事件流。用 websocket.Server（而非 Handler）以跳过 Origin 校验：
+	// localhost-only 网关，靠绑定 127.0.0.1 限制访问，无需 Origin 检查。
+	// （Handler 默认校验 Origin，会拒绝非浏览器/无 Origin 客户端，返回 403。）
+	eventsWS := &websocket.Server{
+		Handshake: func(_ *websocket.Config, _ *http.Request) error { return nil },
+		Handler: func(ws *websocket.Conn) {
+			h.ServeEventsWS(netWSConn{ws})
+		},
+	}
+	mux.Handle("/api/events", eventsWS)
 
 	// 托管前端静态文件（//go:embed 打包进二进制）。
 	dist, _ := fs.Sub(web.Dist, "dist")
