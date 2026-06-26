@@ -1,7 +1,7 @@
 # AgentOS MVP 设计文档 v2.3
 
 - **日期**: 2026-06-24
-- **状态**: 草稿（待用户审阅）
+- **状态**: ✅ **已实现**（阶段 0 + 0.1，2026-06-26 同步；原为草稿）。6 条原始成功标准 + 切片 A 3 条全部达成。
 - **阶段**: 阶段 0 — 安全内核 MVP（数据分析场景）
 - **相对 v1 的变更**: 架构大改。v1 文档（`2026-06-23-agentos-mvp-design.md`）保留作历史对照，本文档为权威。
 
@@ -48,12 +48,16 @@ v1 把"沙箱"当核心壁垒，但深度审视后发现：数据分析场景下
 
 ### 1.3 全局路线图
 
-| 阶段 | 交付物 | 验证目标 |
-|------|--------|----------|
-| **0. 安全内核（本 MVP）** | 单 agent + 脱敏 + 权限 + 审计 + Pipeline + EventBus + 并发骨架 | 技术架构与安全机制能否跑通 |
-| 1. 多 Agent 调度 | agent 生命周期、并发、资源限额、agent 间通信 | 调度层架构 |
-| 2. 企业级能力 | 私有化、多租户、可观测性、审批流、Web 控制台 | 能否卖给企业 |
-| 3. 生态 | SDK / 插件机制 / 企业系统集成 | 商业化扩展 |
+> **实现注记（2026-06-26 同步）**：标 ✅ 的已完成。
+
+| 阶段 | 交付物 | 验证目标 | 状态 |
+|------|--------|----------|------|
+| **0. 安全内核（本 MVP）** | 单 agent + 脱敏 + 权限 + 审计 + Pipeline + EventBus + 并发骨架 | 技术架构与安全机制能否跑通 | ✅ |
+| **0.1 实时可观测控制台（切片 A）** | Web 网关 + 实时仪表盘，安全机制"看得见" | 强化 demo 卖点 | ✅ |
+| **0.5 场景做深** | 真实数据集、对抗测试强化、脱敏增强、`code_exec` 工具 + 硬隔离沙箱 | 把首发场景做穿 | ⬜ |
+| 1. 多 Agent 调度 | agent 生命周期、并发、资源限额、agent 间通信 | 调度层架构 | ⬜ |
+| 2. 企业级能力 | 私有化、多租户、可观测性、审批流、Web 控制台完整 | 能否卖给企业 | ⬜ |
+| 3. 生态 | SDK / 插件机制 / 企业系统集成 | 商业化扩展 | ⬜ |
 
 ---
 
@@ -66,16 +70,20 @@ v1 把"沙箱"当核心壁垒，但深度审视后发现：数据分析场景下
 
 ### 2.2 明确排除（不在 MVP 内）
 
-- 多 agent / agent 间通信（阶段 1）
-- Web UI / 可视化（阶段 2）
-- 硬隔离沙箱 / 真实代码执行沙箱（阶段 2+，仅接口预留）
-- 完整崩溃恢复（仅防半成品，不做断点续跑）
-- 真实认证（mTLS/API key，仅接口预留）
-- 多租户隔离（仅 Identity 字段预留）
-- 记忆系统 / 审批流 / 跨进程消息总线
+> **实现注记（2026-06-26 同步）**：标 ⬜ 的仍未实现；标 ✅ 的已在本 MVP 周期内**提前**完成，详见下方状态。
+
+- 多 agent / agent 间通信（阶段 1）⬜
+- Web UI / 可视化（阶段 2）——**部分提前实现**：实时可观测仪表盘（切片 A）已落地（见 `2026-06-25-agentos-realtime-console-slice-a.md`）。完整 Web 控制台（对话式交互 B、配置编辑 C）仍在阶段 2。✅ 部分
+- 硬隔离沙箱 / 真实代码执行沙箱（阶段 2+，仅接口预留）⬜
+- 完整崩溃恢复（仅防半成品，不做断点续跑）⬜（防半成品 ✅）
+- 真实认证（mTLS/API key，仅接口预留）⬜
+- 多租户隔离（仅 Identity 字段预留）⬜
+- 记忆系统 / 审批流 / 跨进程消息总线 ⬜
 
 ### 2.3 MVP Demo 定义
 一个 CLI 演示，讲清四件事：**agent 能干活、敏感数据被脱敏、操作被管住、出了事能查**。
+
+> **实现注记（2026-06-26 同步）**：本节描述的是 v2.3 **原始设计**的 CLI demo。实际实现已**超额**：切片 A（实时可观测控制台）将 demo 形态升级为 **Web 仪表盘**——浏览器里提交任务、实时看 think/act/observe/工具调用/权限/脱敏/run 收尾。CLI 入口（`agentos-run`）与 `agentos audit show` 仍保留。四件事的 demo 卖点不变，只是呈现从 CLI 升级为可视化。详见切片 A 文档。
 
 ```
 1. agentos-run --task "读 sales.csv 算总和写到 out/" --policy ...
@@ -129,10 +137,14 @@ v1 把"沙箱"当核心壁垒，但深度审视后发现：数据分析场景下
 
 ### 3.2 进程模型
 
+> **实现注记（2026-06-26 同步）**：本表是 v2.3 原始两进程模型（Kernel + Runtime）。切片 A 实现后**实际为四进程**：新增 **Gateway（Go）**——HTTP/WS 网关 + Run 编排（fork Runtime、事件扇出、看门狗）+ 嵌入前端静态资源；新增 **Web Console（React）**。本表保留作历史设计记录；当前权威架构图见 README 与切片 A 文档 §2。
+
 | 角色 | 语言 | 职责 | 安全权威 |
 |------|------|------|----------|
 | **Kernel** | Go（常驻） | 守门人，持有所有敏感能力的执行权 | ✅ 是 |
 | **Agent Runtime** | Python | 执行 LLM 推理循环，**本身零敏感权限** | ❌ 否 |
+| **Gateway**（切片 A 新增） | Go | HTTP/WS 网关 + Run 编排 + 事件扇出，localhost-only | ❌ 否 |
+| **Web Console**（切片 A 新增） | React+TS | 提交 run、实时事件流、脱敏标记展示 | ❌ 否 |
 | **Sandbox** | 由工具按需 | path 型工具内部做路径解析（MVP）；未来独立执行环境 | 受 Kernel 约束 |
 
 **核心安全原则**：Python Runtime 永远不直接碰敏感资源。任何有副作用的操作必须通过 gRPC 向 Kernel 发请求，Kernel 经 Pipeline 处理（权限→执行→脱敏→审计）→ 返回脱敏后的结果。
@@ -222,6 +234,8 @@ type Sandbox interface {
 // MVP 实现：InProcessSandbox（仅内置工具用，不跑任意代码）
 // 未来：WasmSandbox / ContainerSandbox
 ```
+
+> **实现注记（2026-06-26 同步）**：实际 MVP 实现进一步**简化**了此接口——因为数据分析 MVP 的内置工具（fs_read/fs_write/fs_list）是 Kernel 自身代码、不跑 agent 生成的代码，故 `Sandbox` 接口暂不需要 `ExecuteCode`/`ReadFile` 方法。当前接口仅含 `Type() string`（标识沙箱类型，为未来 Wasm/Container 扩展留钩子），路径强校验下沉到 `sandbox.Resolve` 由各 path 型工具在 `Execute` 内部调用。阶段 0.5/1 引入 `code_exec` 工具时，本接口将重新扩展为上述完整形态。这是诚实降级：MVP 不承担"跑任意代码"的安全责任。
 
 数据分析场景真实刚需是"agent 跑 pandas/统计代码"，未来加 `code_exec` 工具 + WasmSandbox 是独立模块，不动 Pipeline。
 
@@ -356,6 +370,11 @@ Runtime 的 LLM 客户端：管"怎么不撞 DeepSeek 限流"（自适应 rate l
 
 **自适应策略（选项 Z）**：保守 RPS 初值 + 遇 429 指数退避 + 动态调低 RPS。在 Runtime 侧实现，因为 429 是 DeepSeek HTTP 响应，只有发起方感知得到。
 
+> **实现注记（2026-06-26 同步）**：本节职责划分**与实现一致**。两点细化：
+> - Kernel Scheduler 用 **Go channel 自实现信号量**（`sem chan struct{}`，FIFO），**未引入** `golang.org/x/time/rate`（避免无谓依赖；信号量比 token bucket 更贴合"并发槽数"语义）。
+> - Runtime 限流为 **自实现 `AdaptiveRateLimiter`**（`runtime/agentos_runtime/rate_limit.py`）：初值 RPM=30，遇 429 降速一半 + 指数退避，成功恢复至初值。
+> - 注：v2.3 §13 技术栈表曾写"`golang.org/x/time/rate` 用于并发"，与实现不符——以本节与 §13 的更新注记为准。
+
 ---
 
 ## 8. Agent Runtime（Python）
@@ -467,30 +486,40 @@ MVP 实现 `LocalAuthenticator`（啥也不验证）。阶段 2 加 mTLS/API key
 
 ## 13. 技术栈锁定
 
+> **实现注记（2026-06-26 同步）**：标 ⚠️ 的条目实现做了更轻量的取舍；标 ➕ 的为实现时新增。实际依赖以 `go.mod` / `runtime/pyproject.toml` / `web-src/package.json` 为准。
+
 | 部件 | 技术 |
 |------|------|
-| Kernel | Go 1.22+ |
+| Kernel | Go 1.22+（`go.mod` 实际声明 1.26.4） |
+| Gateway（切片 A 新增）➕ | Go，复用 Kernel 同 module；`//go:embed` 打包前端 |
 | Runtime | Python 3.11+ |
-| IPC | gRPC + protobuf，Unix domain socket |
-| LLM Provider（MVP） | DeepSeek（云端，OpenAI 兼容） |
+| IPC | gRPC + protobuf，Unix domain socket（依赖 `google.golang.org/grpc`、`google.golang.org/protobuf`） |
+| LLM Provider（MVP） | DeepSeek（云端，OpenAI 兼容，`openai` SDK） |
 | 脱敏 | 独立 Sanitizer（Go） |
-| 并发 | Go 信号量 + `golang.org/x/time/rate` |
-| 审计 | append-only 文件 + hash 链 |
+| 并发 | ⚠️ **不使用** `golang.org/x/time/rate`；Kernel 用 Go channel 自实现信号量，Runtime 用自实现 `AdaptiveRateLimiter`（见 §7.4） |
+| 审计 | append-only 文件 + hash 链（SHA256） |
 | 测试 | Go testing + pytest |
+| Web Console（切片 A 新增）➕ | React 18 + Vite + TypeScript + Vitest + @testing-library/react |
+| 其它 Go 依赖 | `gopkg.in/yaml.v3`（YAML 配置）、`github.com/bmatcuk/doublestar/v4`（path glob 权限匹配） |
 | 部署 | 生产 Linux / 开发 WSL2 或 Docker |
 
 ---
 
 ## 14. 成功标准（v2.3）
 
-1. **功能**：agent 跑通数据分析任务（读 → 脱敏 → 分析 → 写）
-2. **安全**：脱敏有效（敏感字段不进 LLM）+ 对抗测试全过
-3. **可审计**：审计 hash 链完整，通过订阅事件产生
-4. **架构**：加新工具（如 db_query 桩）时 Kernel 核心零改动
-5. **并发**：Scheduler 信号量工作，Account 超限硬终止
-6. **认证**：socket 权限 + Policy 白名单生效
+> **实现注记（2026-06-26 同步）**：6 条原始标准全部达成（详见右侧状态列）；切片 A 追加 3 条（7-9）。
 
-满足这六条，技术架构与安全机制即被验证，可进入阶段 1。
+1. **功能**：agent 跑通数据分析任务（读 → 脱敏 → 分析 → 写）— ✅
+2. **安全**：脱敏有效（敏感字段不进 LLM）+ 对抗测试全过 — ✅（8 例对抗测试）
+3. **可审计**：审计 hash 链完整，通过订阅事件产生 — ✅
+4. **架构**：加新工具（如 db_query 桩）时 Kernel 核心零改动 — ✅（`open_closed_test.go` 可执行证明）
+5. **并发**：Scheduler 信号量工作，Account 超限硬终止 — ✅
+6. **认证**：socket 权限 + Policy 白名单生效 — ✅
+7. **实时可观测**（切片 A 追加）：浏览器实时看 think/act/observe/工具/权限/脱敏/run 收尾 — ✅
+8. **健壮收尾**（切片 A 追加）：崩溃/超时/漏发各路径浏览器都能看到 `run.ended` — ✅
+9. **WS 重连补播**（切片 A 追加）：断开重连补播事件环历史 — ✅
+
+满足这九条，技术架构与安全机制即被验证，可进入阶段 0.5。
 
 ---
 
