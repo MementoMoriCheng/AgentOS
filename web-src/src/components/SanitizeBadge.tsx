@@ -1,5 +1,4 @@
-// SanitizeBadge 显示脱敏摘要：哪些字段被哪种策略处理。
-// 只含字段名+策略，无原始值（Kernel 侧保证）。
+// SanitizeBadge：脱敏摘要，琥珀专属色（安全卖点高亮），每字段独立药丸，无原始值。
 export function SanitizeBadge({
   sanitize,
 }: {
@@ -7,8 +6,18 @@ export function SanitizeBadge({
 }) {
   if (!sanitize || sanitize.length === 0) return null;
   return (
-    <span className="sanitize-badge" title="已脱敏字段（不含原始值）">
-      🔒 {sanitize.map((s) => `${s.field}:${s.strategy}`).join(", ")}
-    </span>
+    <div className="flex flex-wrap items-center gap-1 mt-1">
+      <span className="border border-warn/50 bg-warn/10 text-warn px-2 py-0.5 rounded-chip font-mono text-[9px] tracking-wide">
+        ◆ SANITIZED
+      </span>
+      {sanitize.map((s) => (
+        <span
+          key={s.field}
+          className="border border-warn/30 text-warn px-2 py-0.5 rounded-chip font-mono text-[9px]"
+        >
+          {s.field} → {s.strategy}
+        </span>
+      ))}
+    </div>
   );
 }
