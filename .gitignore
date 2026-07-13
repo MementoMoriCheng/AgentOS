@@ -20,6 +20,8 @@ nul
 
 # 审计/会话运行时产物
 audit/
+# 但 cp/audit/ 是源码包,需纳入版本控制
+!cp/audit/
 *.log
 *.sock
 
