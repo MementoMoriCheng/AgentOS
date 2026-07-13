@@ -10,6 +10,7 @@ def _gate_with(rules):
 def test_gate_allows_read_under_workspace():
     g = _gate_with([Rule("path", "examples/workspace/**", ["fs_read", "fs_list"])])
     assert g.allowed("fs_read", Resource("path", "examples/workspace/sales.csv"))
+    assert g.allowed("fs_read", Resource("path", "examples/workspace"))
 
 
 def test_gate_denies_write_outside_out_dir():

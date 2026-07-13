@@ -1,6 +1,5 @@
 import os
 import re
-from pathlib import PurePath
 
 from cp.policy.policy import Policy
 from cp.resource import Resource
@@ -38,7 +37,7 @@ def _match_path(pattern: str, path: str) -> bool:
         return False
     if ".." in clean.split("/"):
         return False
-    return re.match(_glob_to_regex(pattern), clean) is not None
+    return re.fullmatch(_glob_to_regex(pattern), clean) is not None
 
 
 def _glob_to_regex(pattern: str) -> str:
@@ -80,4 +79,4 @@ def _glob_to_regex(pattern: str) -> str:
         else:
             out.append(re.escape(pattern[i]))
             i += 1
-    return "^" + "".join(out) + "$"
+    return "".join(out)
