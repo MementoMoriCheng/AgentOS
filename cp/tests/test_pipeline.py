@@ -112,3 +112,18 @@ def test_pipeline_quota_exceeded_terminates():
         resp = pipe.call(sess, "fs_read", {"path": "examples/y"})
         assert resp.errored
         assert "quota" in resp.message
+
+
+def test_pipeline_execute_error_publishes_errored_event():
+    with tempfile.TemporaryDirectory() as d:
+        bus = InProcess()
+        reg = Registry()
+        reg.register(StubTool("fs_read", raise_err=True))
+        pipe = Pipeline(reg, bus)
+        sess = _session(d, [Rule("path", "examples/**", ["fs_read"])])
+        seen = []
+        bus.subscribe(lambda e: seen.append(e))
+        resp = pipe.call(sess, "fs_read", {"path": "examples/x"})
+        assert resp.errored
+        assert resp.message == "tool error"
+        assert any(e.type == "tool.errored" for e in seen)
