@@ -20,6 +20,9 @@ def resolve(requested: str) -> str:
     注:此处比 Go 版更严格 —— Go 在 filepath.Clean 之后才扫描 "..",
     而 Clean 会把 "a/../../x" 折叠成 "x" 导致漏检。本实现扫描原始请求,
     任何 ".." 段一律拒绝。
+
+    注意:即便是可安全折叠的 ".."(如 "a/../b" 其实等于 "b")也会被拒。
+    调用方需先将合法的相对路径归一化(去掉无害的 ".."),再传入本函数。
     """
     clean = os.path.normpath(requested)
     abs_path = os.path.abspath(clean)
@@ -29,7 +32,7 @@ def resolve(requested: str) -> str:
         raise PathTraversalError(f"path traversal rejected: {requested}")
     real = os.path.realpath(abs_path)
     if real != abs_path and not _is_under(real, os.path.dirname(abs_path)):
-        raise SymlinkEscapeError(f"symlink escape rejected: {requested} -> {real}")
+        raise SymlinkEscapeError(f"symlink escape rejected: {requested}")
     return real
 
 
