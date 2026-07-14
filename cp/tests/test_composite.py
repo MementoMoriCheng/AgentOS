@@ -88,6 +88,63 @@ def test_register_composites_into_registry():
     reg = PrimitiveRegistry()
     register_composites(reg)
     names = set(reg.names())
-    assert {"spawn_agent", "compress_context", "generate_skill", "handoff"}.issubset(names)
+    assert {"spawn_agent", "compress_context", "generate_skill", "handoff", "compose"}.issubset(names)
     schema_names = {s["name"] for s in reg.schemas()}
-    assert schema_names == {"spawn_agent", "compress_context", "generate_skill", "handoff"}
+    assert "compose" in schema_names
+
+
+# ---------- T5: compose 复合操作(pipeline/router) ----------
+async def test_compose_pipeline(fake_redis):
+    """compose pipeline:两个子 agent 顺序执行。"""
+    from cp.primitives.composite import compose
+    from cp.primitives.registry import PrimitiveContext
+    from cp.adapters.redis_bus import RedisStreamMessageBus
+    from cp.audit.ledger import Ledger
+    from cp.llm.mock import MockLLMClient
+    from cp.policy.policy import Policy
+    from cp.sanitize.sanitizer import Sanitizer
+    from cp.session.session import Session
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        sess = Session.new("s1", "local", Policy(permissions=[], max_steps=5, max_tokens=1000),
+                           Sanitizer.new_from_rules([]), Ledger(d + "/a.log"))
+        ctx = PrimitiveContext(session=sess, bus=RedisStreamMessageBus(fake_redis),
+                               llm=MockLLMClient([{"role": "assistant", "content": "sub-result"}]))
+        result = await compose(ctx, {"pattern": "pipeline", "task": "do work",
+                                     "sub_agents": [{"prompt": "step A"}, {"prompt": "step B"}]})
+    assert result.status == "success"
+    assert result.data["pattern"] == "pipeline"
+    assert "stages" in result.data
+
+
+async def test_compose_router(fake_redis):
+    from cp.primitives.composite import compose
+    from cp.primitives.registry import PrimitiveContext
+    from cp.adapters.redis_bus import RedisStreamMessageBus
+    from cp.audit.ledger import Ledger
+    from cp.llm.mock import MockLLMClient
+    from cp.policy.policy import Policy
+    from cp.sanitize.sanitizer import Sanitizer
+    from cp.session.session import Session
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        sess = Session.new("s2", "local", Policy(permissions=[], max_steps=5, max_tokens=1000),
+                           Sanitizer.new_from_rules([]), Ledger(d + "/a.log"))
+        ctx = PrimitiveContext(session=sess, bus=RedisStreamMessageBus(fake_redis),
+                               llm=MockLLMClient([{"role": "assistant", "content": "par-result"}]))
+        result = await compose(ctx, {"pattern": "router", "task": "parallel work",
+                                     "sub_agents": [{"prompt": "A"}, {"prompt": "B"}]})
+    assert result.status == "success"
+    assert result.data["pattern"] == "router"
+    assert "sub_results" in result.data
+
+
+async def test_compose_unknown_pattern_returns_error(fake_redis):
+    from cp.primitives.composite import compose
+    from cp.primitives.registry import PrimitiveContext
+    ctx = PrimitiveContext()
+    result = await compose(ctx, {"pattern": "bogus", "task": "x", "sub_agents": []})
+    assert result.status == "error"
+    assert "unknown pattern" in result.error

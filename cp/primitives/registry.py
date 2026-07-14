@@ -13,7 +13,7 @@ class PrimitiveResult:
 
 class PrimitiveContext:
     """原语执行上下文:持有 session/sandbox_id/sandbox/bus/state 等依赖。"""
-    def __init__(self, session=None, sandbox_id="", sandbox=None, bus=None, state=None, run_id=""):
+    def __init__(self, session=None, sandbox_id="", sandbox=None, bus=None, state=None, run_id="", llm=None):
         self.session = session
         self.sandbox_id = sandbox_id
         self.sandbox = sandbox
@@ -21,6 +21,7 @@ class PrimitiveContext:
         self.state = state
         self.run_id = run_id  # 当前 run id,事件用它关联 run(WS 补播/实时)
         self.inbox = {}  # topic -> [msg];sub 收到消息写这里,agent loop 每步 drain
+        self.llm = llm  # LLM 客户端;compose 复合操作的子 agent loop 用
 
 
 class Primitive(Protocol):

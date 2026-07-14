@@ -107,7 +107,7 @@ class RunManager:
         ctx = PrimitiveContext(
             session=sess, sandbox_id=sandbox_id, sandbox=self.sandbox,
             bus=self.msg_bus,  # 关键:ctx.bus = 消息总线(2 参 publish);None 时 pub/sub 报错
-            state=self.state, run_id=run_id,
+            state=self.state, run_id=run_id, llm=self.llm,
         )
 
         schemas = self.prim_registry.schemas() if self.prim_registry else []

@@ -101,6 +101,38 @@ async def handoff(ctx: PrimitiveContext, params: Dict[str, Any]) -> PrimitiveRes
     })
 
 
+async def compose(ctx: PrimitiveContext, params: Dict[str, Any]) -> PrimitiveResult:
+    """compose:多 agent 编排。pattern: pipeline(顺序)| router(并行 fan-out)。
+    sub_agents 是 [{prompt: ...}] 列表,每个起一个子 agent loop。
+    接入 cp/orchestration 的 run_pipeline / run_router。"""
+    from cp.agent_loop import run_agent_loop
+    pattern = params.get("pattern", "pipeline")
+    task = params.get("task", "")
+    sub_agents = params.get("sub_agents", [])
+
+    async def _run_sub(sub_params, input_task=None):
+        prompt = sub_params.get("prompt", input_task or task)
+        result = await run_agent_loop(prompt, ctx.llm, None, ctx.session, ctx,
+                                      [], max_steps=sub_params.get("max_steps", 5))
+        return result
+
+    if pattern == "pipeline":
+        from cp.orchestration.pipeline import run_pipeline
+        agent_fns = [lambda t, sp=sp: _run_sub(sp, t) for sp in sub_agents]
+        out = await run_pipeline(agent_fns, task)
+        return PrimitiveResult(status="success", data={
+            "pattern": pattern, "result": out.get("final", ""),
+            "stages": out.get("stages", [])})
+    elif pattern == "router":
+        from cp.orchestration.router import run_router
+        agent_fns = [lambda t, sp=sp: _run_sub(sp, t) for sp in sub_agents]
+        out = await run_router(agent_fns, task)
+        return PrimitiveResult(status="success", data={
+            "pattern": pattern, "result": out.get("final", ""),
+            "sub_results": out.get("sub_results", [])})
+    return PrimitiveResult(status="error", error=f"unknown pattern: {pattern}")
+
+
 # ---------- LLM schema(骨架固定,参数动态) ----------
 _COMPOSITE_SCHEMAS = {
     "spawn_agent": {"name": "spawn_agent",
@@ -126,6 +158,12 @@ _COMPOSITE_SCHEMAS = {
             "properties": {"from_agent": {"type": "string"}, "to_agent": {"type": "string"},
                            "session_id": {"type": "string"}},
             "required": ["to_agent"]}},
+    "compose": {"name": "compose",
+        "description": "Multi-agent orchestration (pipeline=sequential, router=parallel fan-out).",
+        "parameters": {"type": "object",
+            "properties": {"pattern": {"type": "string"}, "task": {"type": "string"},
+                           "sub_agents": {"type": "array"}},
+            "required": ["pattern", "task", "sub_agents"]}},
 }
 
 
@@ -154,10 +192,11 @@ COMPOSITES: Dict[str, tuple] = {
     "compress_context": (compress_context, _COMPOSITE_SCHEMAS["compress_context"]),
     "generate_skill": (generate_skill, _COMPOSITE_SCHEMAS["generate_skill"]),
     "handoff": (handoff, _COMPOSITE_SCHEMAS["handoff"]),
+    "compose": (compose, _COMPOSITE_SCHEMAS["compose"]),
 }
 
 
 def register_composites(registry) -> None:
-    """把 4 复合操作包成 CompositePrimitive 注册进 PrimitiveRegistry。"""
+    """把 5 复合操作包成 CompositePrimitive 注册进 PrimitiveRegistry。"""
     for name, (func, schema) in COMPOSITES.items():
         registry.register(CompositePrimitive(name, func, schema))
