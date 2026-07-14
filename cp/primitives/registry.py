@@ -43,3 +43,7 @@ class PrimitiveRegistry:
 
     def names(self) -> List[str]:
         return list(self._prims.keys())
+
+    def schemas(self) -> List[Dict[str, Any]]:
+        """所有已注册原语/复合操作的 LLM schema 列表(喂给 agent loop)。"""
+        return [p.schema() for p in self._prims.values()]

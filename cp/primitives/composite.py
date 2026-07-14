@@ -1,8 +1,9 @@
 """V2 ch23.5 复合操作:固定骨架的原语序列脚本。外层 1 调用 + 内层动态。
 骨架(控制流)由代码保证;内容(数据流)动态。"""
-from typing import Any, Dict
+from typing import Any, Callable, Dict
 
 from cp.primitives.registry import PrimitiveContext, PrimitiveResult
+from cp.resource import Resource
 
 
 async def spawn_agent(ctx: PrimitiveContext, params: Dict[str, Any]) -> PrimitiveResult:
@@ -98,3 +99,65 @@ async def handoff(ctx: PrimitiveContext, params: Dict[str, Any]) -> PrimitiveRes
         "from": from_agent, "to": to_agent,
         "context_transferred": context_data.data.get("value") is not None,
     })
+
+
+# ---------- LLM schema(骨架固定,参数动态) ----------
+_COMPOSITE_SCHEMAS = {
+    "spawn_agent": {"name": "spawn_agent",
+        "description": "Fork a child agent (fixed skeleton: pub created -> child ReAct -> pub completed).",
+        "parameters": {"type": "object",
+            "properties": {"agent_type": {"type": "string"}, "prompt": {"type": "string"},
+                           "context_mode": {"type": "string"}},
+            "required": ["agent_type", "prompt"]}},
+    "compress_context": {"name": "compress_context",
+        "description": "Summarize and persist session context (llm summary -> write kv).",
+        "parameters": {"type": "object",
+            "properties": {"session_id": {"type": "string"}, "history": {"type": "array"},
+                           "strategy": {"type": "string"}},
+            "required": ["session_id", "history"]}},
+    "generate_skill": {"name": "generate_skill",
+        "description": "Generate a reusable skill file from session history.",
+        "parameters": {"type": "object",
+            "properties": {"skill_name": {"type": "string"}, "session_history": {"type": "string"}},
+            "required": ["skill_name"]}},
+    "handoff": {"name": "handoff",
+        "description": "Hand off context to another agent (read kv context -> pub handoff).",
+        "parameters": {"type": "object",
+            "properties": {"from_agent": {"type": "string"}, "to_agent": {"type": "string"},
+                           "session_id": {"type": "string"}},
+            "required": ["to_agent"]}},
+}
+
+
+class CompositePrimitive:
+    """适配器:把裸复合函数(async def f(ctx, params))包成 Primitive Protocol。
+    permission_key 用专用 resource_type='composite',policy 可统一放行/收口。"""
+
+    def __init__(self, name: str, func: Callable, schema: Dict[str, Any]):
+        self.name = name
+        self._func = func
+        self._schema = schema
+
+    def schema(self) -> Dict[str, Any]:
+        return self._schema
+
+    def permission_key(self, params: Dict[str, Any]) -> Resource:
+        return Resource(type="composite", id=self.name)
+
+    async def execute(self, ctx: PrimitiveContext, params: Dict[str, Any]) -> PrimitiveResult:
+        return await self._func(ctx, params)
+
+
+# 复合操作注册表:name -> (func, schema)
+COMPOSITES: Dict[str, tuple] = {
+    "spawn_agent": (spawn_agent, _COMPOSITE_SCHEMAS["spawn_agent"]),
+    "compress_context": (compress_context, _COMPOSITE_SCHEMAS["compress_context"]),
+    "generate_skill": (generate_skill, _COMPOSITE_SCHEMAS["generate_skill"]),
+    "handoff": (handoff, _COMPOSITE_SCHEMAS["handoff"]),
+}
+
+
+def register_composites(registry) -> None:
+    """把 4 复合操作包成 CompositePrimitive 注册进 PrimitiveRegistry。"""
+    for name, (func, schema) in COMPOSITES.items():
+        registry.register(CompositePrimitive(name, func, schema))

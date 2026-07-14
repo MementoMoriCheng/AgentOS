@@ -69,3 +69,25 @@ async def test_handoff_reads_context_and_publishes(fake_redis):
     # pub.handoff 应在 Stream
     handoff_events = await fake_redis.xrange("agent.handoff")
     assert len(handoff_events) == 1
+
+
+# ---------- T1: CompositePrimitive 适配器 + schemas() ----------
+def test_composite_primitive_adapter_conforms_to_protocol():
+    from cp.primitives.composite import CompositePrimitive, COMPOSITES
+    from cp.resource import Resource
+    func, schema = COMPOSITES["spawn_agent"]
+    p = CompositePrimitive("spawn_agent", func, schema)
+    assert p.name == "spawn_agent"
+    assert p.schema()["name"] == "spawn_agent"
+    assert p.permission_key({}) == Resource(type="composite", id="spawn_agent")
+
+
+def test_register_composites_into_registry():
+    from cp.primitives.composite import register_composites
+    from cp.primitives.registry import PrimitiveRegistry
+    reg = PrimitiveRegistry()
+    register_composites(reg)
+    names = set(reg.names())
+    assert {"spawn_agent", "compress_context", "generate_skill", "handoff"}.issubset(names)
+    schema_names = {s["name"] for s in reg.schemas()}
+    assert schema_names == {"spawn_agent", "compress_context", "generate_skill", "handoff"}
