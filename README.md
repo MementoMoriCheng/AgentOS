@@ -229,20 +229,21 @@ conda run -n agentos python -m pytest cp/tests/adversarial/ -v
 
 ## V2 完成度与路线图
 
-**当前（Week 6 完成，约 80%）：**
+**当前（Week 7 完成，约 85%）：**
 - ✅ 五平面骨架（控制面 + State Plane Redis + 执行面沙箱接口）
-- ✅ 6 步统一管道 + 7 原子原语 + 4 复合操作（经 agent loop 可达）
+- ✅ 6 步统一管道 + 7 原子原语 + 5 复合操作（含 compose 编排，经 agent loop 可达）
 - ✅ 四道防线（脱敏/权限/沙箱/审计 hash 链）+ 8 对抗用例
 - ✅ HTTP + WebSocket API（复刻旧 gateway 契约，前端零改）
 - ✅ 双总线（审计 InProcess + 消息 Redis Stream）
-- ✅ Checkpoint 每步存、Scheduler 限流、HarnessRouter 适配
+- ✅ Checkpoint 每步存 **+ 崩溃恢复续跑**（load_latest→rehydrate→续跑）
+- ✅ Scheduler 限流、HarnessRouter 适配
 - ✅ Run 状态落 Redis（跨副本可观测，约束 6 在可观测面成立）
+- ✅ `io` 原语真联网（httpx）、`sub` 消息分发（inbox→loop 注入）
 
 **待完成：**
-- ⬜ Checkpoint **恢复续跑**（存已实现，rehydrate 恢复路径未接运行时）
 - ⬜ 跨副本 **run 执行**调度（租约/工作队列）
 - ⬜ AuthPort 真实现（JWT/OAuth/租户隔离）
-- ⬜ `io` 原语真实 HTTP/MCP、`sub` handler 触发
+- ⬜ `io` MCP 协议、`sub` 跨副本消息
 - ⬜ Postgres（checkpoint/审计）、Kafka（事件回放）
 - ⬜ 沙箱池生命周期管理、RemoteSandboxExecutor（沙箱经消息总线）
 
