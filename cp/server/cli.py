@@ -23,20 +23,37 @@ def _make_llm(mode: str):
 
 def serve(host: str = "127.0.0.1", port: int = 8080, redis_url: str = "",
           policy_dir: str = "examples/policies", sanitization_dir: str = "examples/sanitization",
-          static_dir: str = "web-src/dist", llm_mode: str = "mock"):
+          static_dir: str = "web-src/dist", llm_mode: str = "mock", max_concurrent: int = 10):
     import uvicorn
+    from cp.adapters.redis_bus import RedisStreamMessageBus
     from cp.compose import build_control_plane
+    from cp.primitives.composite import register_composites
     from cp.primitives.executor import PrimitiveExecutor
+    from cp.scheduler.scheduler import Scheduler
     from cp.server.app import create_app
+    from cp.server.redis_store import RedisRunStore
     from cp.server.runmgr import RunManager
 
     redis = _make_redis(redis_url)
     cp = build_control_plane(redis)
-    mgr = RunManager(cp["registry"], cp["sandbox"], cp["state"],
-                     executor_factory=lambda bus: PrimitiveExecutor(cp["prim_registry"], bus),
-                     llm=_make_llm(llm_mode))
-    app = create_app(mgr, policy_dir, sanitization_dir, static_dir)
-    print(f"AgentOS 控制面启动: http://{host}:{port} (llm={llm_mode})")
+    # 注册复合操作到原语注册表(T1)
+    register_composites(cp["prim_registry"])
+    # 消息总线(T2:ctx.bus,pub/sub/复合操作用)
+    msg_bus = RedisStreamMessageBus(redis)
+    # Run 状态外部存储(T6:跨副本可观测)
+    run_store = RedisRunStore(redis)
+    mgr = RunManager(
+        cp["registry"], cp["sandbox"], cp["state"],
+        executor_factory=lambda bus: PrimitiveExecutor(cp["prim_registry"], bus),
+        llm=_make_llm(llm_mode),
+        msg_bus=msg_bus,
+        prim_registry=cp["prim_registry"],
+        scheduler=Scheduler(max_concurrent),
+        harness_router=cp["harness_router"],
+        run_store=run_store,
+    )
+    app = create_app(mgr, policy_dir, sanitization_dir, static_dir, run_store=run_store)
+    print(f"AgentOS 控制面启动: http://{host}:{port} (llm={llm_mode}, max_concurrent={max_concurrent})")
     uvicorn.run(app, host=host, port=port)
 
 
@@ -51,10 +68,11 @@ def main():
     s.add_argument("--sanitization-dir", default="examples/sanitization")
     s.add_argument("--static-dir", default="web-src/dist")
     s.add_argument("--llm", default="mock", choices=["mock", "real"])
+    s.add_argument("--max-concurrent", type=int, default=10, help="并发 run 上限")
     args = p.parse_args()
     if args.cmd == "serve":
         serve(args.host, args.port, args.redis_url, args.policy_dir,
-              args.sanitization_dir, args.static_dir, args.llm)
+              args.sanitization_dir, args.static_dir, args.llm, args.max_concurrent)
     else:
         p.print_help()
 

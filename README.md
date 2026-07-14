@@ -4,7 +4,9 @@
 
 **当前阶段：MVP（阶段 0 — 安全内核）**。已通过技术验证，含真实 LLM（DeepSeek）端到端 demo。
 
-> ⚠️ **实现状态（2026-07）**：当前实现是 `cp/`（Python 控制面，V2 架构）。`kernel/`、`gateway/`、`runtime/`（Go + 旧 Python 运行时）为 **legacy**，保留作参考，不再开发。下方 Go 架构描述仅作历史背景。
+> ⚠️ **实现状态（2026-07，Week 6 完成）**：当前实现是 `cp/`（Python 控制面，V2 架构）。`kernel/`、`gateway/`、`runtime/`（Go + 旧 Python 运行时）为 **legacy**，保留作参考，不再开发。下方 Go 架构描述仅作历史背景。
+>
+> **Week 6 进展：** 孤儿模块全接线（4 复合操作经 agent loop 可达、原语 schema 喂入 LLM、Checkpoint 每步存+恢复、Scheduler 限流、HarnessRouter 选 prompt）；Run 事件/元数据落 Redis（**跨副本可观测**，约束 6 在可观测面成立）。
 >
 > **Python 控制面启动：** `conda run -n agentos python -m cp.server.cli serve`（默认 fakeredis + mock LLM，零配置）。HTTP + WebSocket API 复刻旧 gateway 契约，前端 `web-src/` 零改对接。详见 [V2 架构设计](docs/AgentOS架构设计重点关注V2.md)。
 
