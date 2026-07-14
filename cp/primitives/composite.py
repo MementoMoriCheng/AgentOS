@@ -8,7 +8,7 @@ from cp.resource import Resource
 
 async def spawn_agent(ctx: PrimitiveContext, params: Dict[str, Any]) -> PrimitiveResult:
     """spawn_agent:创建子 agent。骨架:pub(created)→session→子 ReAct→pub(completed)。
-    像 OS fork()。Week 3 内层 ReAct 用 mock(单步);真实多步留 Week 4。"""
+    像 OS fork()。内层 ReAct 当前用 mock(单步);真实多步子 agent 留后续。"""
     agent_type = params.get("agent_type", "default")
     prompt = params.get("prompt", "")
     context_mode = params.get("context_mode", "fresh")

@@ -4,7 +4,8 @@ from cp.resource import Resource
 
 
 class IoPrimitive:
-    """io 原语:同步点对点请求(HTTP/gRPC)。Week 3 mock 实现。"""
+    """io 原语:同步点对点请求(HTTP/MCP)。当前 mock 实现(固定 200)。
+    真实实现需接 httpx/aiohttp,待后续周完成。"""
     name = "io"
 
     def schema(self) -> Dict[str, Any]:

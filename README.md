@@ -2,11 +2,7 @@
 
 > 企业级、以**安全与可控**为核心壁垒的 Agent 操作系统。让 AI agent 在严格受控的沙箱里执行任务——每个有副作用的操作都经过权限闸门、字段级脱敏、不可篡改的审计链。
 
-**当前阶段：MVP（阶段 0 — 安全内核）**。已通过技术验证，含真实 LLM（DeepSeek）端到端 demo。
-
-> ⚠️ **实现状态（2026-07，Week 6 完成）**：当前实现是 `cp/`（Python 控制面，V2 架构）。`kernel/`、`gateway/`、`runtime/`（Go + 旧 Python 运行时）为 **legacy**，保留作参考，不再开发。下方 Go 架构描述仅作历史背景。
->
-> **Week 6 进展：** 孤儿模块全接线（4 复合操作经 agent loop 可达、原语 schema 喂入 LLM、Checkpoint 每步存+恢复、Scheduler 限流、HarnessRouter 选 prompt）；Run 事件/元数据落 Redis（**跨副本可观测**，约束 6 在可观测面成立）。
+> ⚠️ **实现状态（2026-07，Week 6 完成）**：当前实现是 `cp/`（Python 控制面，V2 架构）。`kernel/`、`gateway/`、`runtime/`、`pb/`（Go + gRPC + 旧 Python 运行时）为 **legacy**，保留作历史参考，不再开发。下方有独立的 legacy 说明。
 >
 > **Python 控制面启动：** `conda run -n agentos python -m cp.server.cli serve`（默认 fakeredis + mock LLM，零配置）。HTTP + WebSocket API 复刻旧 gateway 契约，前端 `web-src/` 零改对接。详见 [V2 架构设计](docs/AgentOS架构设计重点关注V2.md)。
 
@@ -32,9 +28,9 @@ LLM 是不可控的——它会被 prompt 注入欺骗、会产生幻觉、会�
 
 ---
 
-## 架构
+## 架构（V2，Python 控制面）
 
-四个进程协作，**Kernel 是事件枢纽**：
+V2 架构是**五平面**设计（详见 [V2 架构设计](docs/AgentOS架构设计重点关注V2.md)）：
 
 ```
                        ┌──────────────────────────┐
@@ -43,44 +39,51 @@ LLM 是不可控的——它会被 prompt 注入欺骗、会产生幻觉、会�
                        └────────────┬─────────────┘
                               HTTP + WebSocket
                        ┌────────────┴─────────────┐
-                       │     Gateway (Go)         │
+                       │   cp/server (FastAPI)    │
                        │  · HTTP API + WS Hub     │
-                       │  · Run Manager（编排）   │
-                       │  · 嵌入前端静态资源      │
+                       │  · RunManager（编排）    │
+                       │  · 托管前端静态资源      │
                        └────────────┬─────────────┘
-                          gRPC │        │ 拉起/守护
-              SubscribeEvents │        ▼
-  ┌───────────────────────────┴──┐  ┌─────────────────────┐
-  │        Kernel (Go)           │  │   Runtime (Python)  │
-  │  · Pipeline（6 步统一管道）  │◄─┤  · DeepSeek 客户端  │
-  │  · Gate（Resource 泛化权限） │  │  · ReAct 循环       │
-  │  · Sanitizer（脱敏）         │  │  · 自适应 rate limit│
-  │  · Audit Ledger（hash 链）   │  │                     │
-  │  · EventBus（事件枢纽）      │  │  零敏感权限：所有   │
-  │  · Scheduler + Account       │  │  操作委托给 Kernel  │
-  │  · Authenticator（接口预留） │  └─────────────────────┘
-  └──────────────────────────────┘
-          gRPC over Unix socket
+                                    │
+              ┌─────────────────────┴──────────────┐
+              │        cp/ 控制面核心（单进程）       │
+              │  · Pipeline / PrimitiveExecutor      │
+              │    （6 步统一管道 + 7 原子原语 +      │
+              │     4 复合操作）                      │
+              │  · Gate（Resource 泛化权限）         │
+              │  · Sanitizer（脱敏）                 │
+              │  · Audit Ledger（hash 链）           │
+              │  · EventBus（双总线：审计 + 消息）   │
+              │  · Scheduler + Checkpoint            │
+              │  · Harness Router（框架适配）        │
+              │  · LLM 客户端（DeepSeek / Mock）     │
+              └─────────────────────┬───────────────┘
+                                    │ StatePort
+                       ┌────────────┴─────────────┐
+                       │     Redis（State Plane）  │
+                       │  · 会话状态 + checkpoint  │
+                       │  · Run 元数据/事件        │
+                       │  · 消息总线 Stream        │
+                       └──────────────────────────┘
 ```
 
-| 进程 | 语言 | 职责 | 安全权威 |
-|------|------|------|----------|
-| **Kernel** | Go（常驻） | 守门人：权限/脱敏/审计/调度，持有所有敏感能力的执行权 | ✅ 唯一 |
-| **Runtime** | Python | agent 的"大脑"：LLM 推理 + ReAct 循环，**本身零敏感权限** | ❌ |
-| **Gateway** | Go | HTTP/WS 网关，编排 run（启动 Runtime、管理 session、扇出事件）| ❌ |
-| **Web Console** | React | 实时控制台：提交 run、看事件流/工具调用/脱敏标记 | ❌ |
+| 组件 | 职责 | 实现位置 |
+|------|------|---------|
+| **控制面** | 编排 + 安全管线 + agent loop，本身无状态 | `cp/` |
+| **State Plane** | Redis（会话/checkpoint/run 事件/消息总线） | `cp/adapters/local_state.py`、`redis_bus.py` |
+| **执行面** | 沙箱（Local 进程内 / Docker 接口预留） | `cp/adapters/local_sandbox.py`、`docker_sandbox.py` |
 
-### 核心抽象：工具自描述（开闭原则）
+### 核心抽象：原语自描述（开闭原则）
 
-Kernel **不认识任何具体工具**。每个工具自带元数据（名字、LLM schema、权限资源怎么提取）。加一个新工具（如 `db_query`）只需：
-1. 写一个 `Tool` 接口实现
+控制面**不认识任何具体原语**。每个原语自带元数据（名字、LLM schema、权限资源怎么提取）。加一个新原语只需：
+1. 写一个 `Primitive` 协议实现
 2. 注册它
 
-Pipeline / Gate / Sanitizer / EventBus **零行改动**。这一点由架构验证测试（`kernel/test/architecture/`）可执行地证明。
+Pipeline / Gate / Sanitizer / EventBus **零行改动**。这一点由架构验证测试（`cp/tests/architecture/`）可执行地证明。
 
 ### 统一事件流
 
-Kernel 的 `EventBus` 是事件枢纽。Runtime 把推理事件（`run.started`、`runtime.step`、`run.ended`）通过 gRPC 灌进 Kernel 的 EventBus，所有事件统一从 Kernel 流出 → Gateway 订阅 → WebSocket 扇出给前端。审计也通过订阅 `tool.*` 事件产生（集中、不散落）。
+`EventBus` 是事件枢纽。控制面的所有操作（`tool.called`、`primitive.called`、`run.started/ended`）都经总线流出 → 审计订阅者写 hash 链 → WS 扇出给前端。双总线设计：审计总线（InProcess，1 参 `Event`）+ 消息总线（Redis Stream，2 参 `topic/payload`，供 pub/sub/复合操作用）。
 
 ---
 
@@ -92,148 +95,111 @@ AgentOS/
 │   ├── server/          # FastAPI HTTP + WebSocket 服务层
 │   │   ├── app.py       # 复刻旧 gateway API 契约
 │   │   ├── runmgr.py    # 异步 Run 生命周期 + 事件收集
+│   │   ├── redis_store.py # Run 状态外部存储（跨副本可观测）
 │   │   └── cli.py       # python -m cp.server.cli serve
-│   ├── primitives/      # 7 原子原语 + executor + registry
+│   ├── primitives/      # 7 原子原语 + 4 复合操作 + executor + registry
 │   ├── pipeline/        # 6 步统一管道
 │   ├── policy/          # Policy + Gate（权限匹配）
 │   ├── sanitize/        # 脱敏层（第一道防线）
 │   ├── audit/           # hash 链账本
-│   ├── eventbus/        # 异步事件总线
-│   ├── adapters/        # Port 适配器（local_sandbox/state）
-│   ├── orchestration/   # 编排（顺序链 + fan-out/fan-in）
+│   ├── eventbus/        # 异步事件总线（审计）
+│   ├── adapters/        # Port 适配器（local_sandbox/state、redis_bus、docker）
+│   ├── orchestration/   # 多 agent 编排模式（顺序链 + fan-out/fan-in）
 │   ├── harness/         # V2 Part 2 Harness 适配层
 │   ├── llm/             # DeepSeek + Mock 客户端
-│   └── tests/           # 177 tests（含 8 对抗用例）
-├── kernel/              # 【legacy】Go 内核（安全 + 调度 + Pipeline）
-│   ├── cmd/agentos/     # CLI: agentos serve / audit show
-│   ├── internal/
-│   │   ├── resource/    # Resource{Type,ID} 泛化权限对象
-│   │   ├── policy/      # Policy + Gate（权限匹配）
-│   │   ├── sanitize/    # 脱敏层（mask/hash/redact）—— 第一道防线
-│   │   ├── audit/       # hash 链账本 + 事件订阅者
-│   │   ├── eventbus/    # in-process 同步事件总线
-│   │   ├── sandbox/     # Sandbox 接口 + path 校验
-│   │   ├── tools/       # Tool 接口 + fs_read/fs_write/fs_list
-│   │   ├── session/     # Session + Account（资源限额）
-│   │   ├── scheduler/   # 并发信号量
-│   │   ├── pipeline/    # 6 步统一管道（核心）
-│   │   ├── auth/        # Authenticator + Policy 白名单
-│   │   └── server/      # gRPC 服务端
-│   └── test/
-│       ├── adversarial/ # 对抗安全测试（8 例，护城河证明）
-│       └── architecture/# 架构验证（开闭原则证明）
-├── gateway/             # 【legacy】Go 网关（HTTP/WS + Run 编排 + 嵌入前端）
-├── runtime/             # 【legacy】Python 运行时（DeepSeek + ReAct）
-│   └── agentos_runtime/
+│   ├── checkpoint.py    # 故障恢复（快照 + 重水合）
+│   ├── scheduler/       # 并发限流
+│   └── tests/           # 196 tests（含 8 对抗用例）
 ├── web-src/             # React 前端（Vite，API 契约已被 cp/ 复刻）
-├── pb/                  # 【legacy】gRPC 契约（.proto 源 + Go 生成代码）
-├── examples/            # demo 工作区 + 策略 + 脱敏规则（受信目录）
-└── docs/superpowers/    # 设计文档 + 实现计划（中文）
+├── examples/            # demo 工作区 + 策略 + 脱敏规则（受信目录，cp/ 仍读）
+├── kernel/              # 【legacy】Go 内核（V1 架构，不再开发）
+├── gateway/             # 【legacy】Go 网关（V1 架构，不再开发）
+├── runtime/             # 【legacy】Python 运行时（V1，不再开发）
+├── pb/                  # 【legacy】gRPC 契约（V1）
+├── docs/
+│   ├── AgentOS架构设计重点关注V2.md  # V2 架构 SSOT（当前权威）
+│   ├── superpowers/plans/            # Week 1–6 Python cp/ 实现计划
+│   ├── legacy/                       # V1（Go）设计文档（历史参考）
+│   └── enterprise-java-design/       # 企业级 Java 设计探索（非当前实现）
+└── pytest.ini
 ```
 
 ---
 
 ## 快速开始
 
-### Python 控制面（当前实现，推荐）
-
-```bash
-# 1. 安装依赖（conda 环境名 agentos）
-conda create -n agentos python=3.11 -y && conda activate agentos
-pip install fastapi uvicorn httpx websockets fakeredis redis openai pyyaml pytest pytest-asyncio
-
-# 2. 启动（默认 fakeredis + mock LLM，零配置）
-conda run -n agentos python -m cp.server.cli serve
-# → http://127.0.0.1:8080
-
-# 3. 真实 LLM（可选）
-export DEEPSEEK_API_KEY="sk-你的key"
-conda run -n agentos python -m cp.server.cli serve --llm real
-
-# 4. 前端（可选，构建后托管在根路径）
-cd web-src && npm install && npm run build && cd ..
-# 重新启动 server，根路径自动托管 web-src/dist
-
-# 5. 测试
-conda run -n agentos python -m pytest cp/ -q          # 全回归
-conda run -n agentos python -m pytest cp/tests/adversarial/ -v  # 8 对抗用例
-```
-
----
-
-### 环境要求（legacy Go，仅供参考）
-
 ### 环境要求
 
-- **Go 1.22+**（开发用 1.26）
-- **Python 3.11+**
-- **protoc + protoc-gen-go**（仅改 proto 时需要）
+- **Python 3.11+**（conda 环境名 `agentos`）
 - **Node.js 18+**（仅构建前端时需要）
-- **DeepSeek API key**（或自行对接其它 OpenAI 兼容模型）
-- **Linux / WSL2**（生产/运行推荐；Windows 可开发但自编译二进制受 WDAC 等策略限制）
+- **DeepSeek API key**（可选；不配则用 mock LLM）
 
 ### 1. 安装依赖
 
 ```bash
-# Go 依赖
-go mod tidy
+# Python 依赖（建议用 conda 隔离）
+conda create -n agentos python=3.11 -y && conda activate agentos
+pip install fastapi uvicorn httpx websockets fakeredis redis openai pyyaml pytest pytest-asyncio
 
-# Python 依赖（建议用 venv/conda 隔离）
-cd runtime && pip install -e . && cd ..
-
-# 前端依赖（构建控制台）
+# 前端依赖（可选，构建控制台）
 cd web-src && npm install && npm run build && cd ..
 ```
 
-### 2. 设置 DeepSeek key
+### 2. 启动控制面
 
 ```bash
+# 默认：fakeredis + mock LLM（零配置，本地开发最快）
+conda run -n agentos python -m cp.server.cli serve
+# → http://127.0.0.1:8080
+
+# 真实 LLM（可选）
 export DEEPSEEK_API_KEY="sk-你的key"
+conda run -n agentos python -m cp.server.cli serve --llm real
+
+# 真实 Redis（可选，多副本时需要）
+conda run -n agentos python -m cp.server.cli serve --redis-url redis://localhost:6379
 ```
 
-### 3. 端到端 demo（三进程协作）
+启动后：
+- **`/docs`** — FastAPI Swagger UI（交互式试每个 API）
+- **`/api/policies`** — 列出可用策略
+- **`/`** — React 控制台（若已 `npm run build`）
 
-**终端 1 — 启动 Kernel**（gRPC over Unix socket）：
-```bash
-go run ./kernel/cmd/agentos serve -socket ./agentos.sock -audit-dir ./audit
-```
+### 3. 用控制台
 
-**终端 2 — 启动 Gateway**（HTTP + WS，嵌入前端，编排 Runtime）：
-```bash
-go run ./gateway/cmd/agentos-gateway -kernel-socket ./agentos.sock -http 127.0.0.1:8080
-```
-
-**终端 3 — 用控制台**：
 打开浏览器访问 `http://127.0.0.1:8080`，提交一个 run：
-- 选 policy：`examples/policies/data_analyst.yaml`
-- 选 sanitization：`examples/sanitization/pii_rules.yaml`
+- 选 policy：`data_analyst.yaml`
+- 选 sanitization：`pii_rules.yaml`
 - 任务示例：`Read examples/workspace/sales.csv, compute the total amount, write to examples/workspace/out/total.txt`
 
-控制台会实时显示 agent 的推理步骤、工具调用、脱敏标记。
+控制台实时显示 agent 的推理步骤、工具调用、脱敏标记。
 
-### 4. 查看审计日志
+### 4. 测试
 
 ```bash
-go run ./kernel/cmd/agentos audit show <session-id>
+# 全回归（196 passed, 9 skipped）
+conda run -n agentos python -m pytest cp/ -v
+
+# 对抗用例（8 例，护城河证明）
+conda run -n agentos python -m pytest cp/tests/adversarial/ -v
 ```
-输出每条操作（who/what/when/result），并校验 hash 链完整性。
 
 ---
 
 ## 安全特性
 
-### 四道防线（详见架构图）
+### 四道防线
 
 | 防线 | 机制 | 实现 |
 |------|------|------|
-| ① 脱敏 | 字段级，mask/hash/redact 三策略 | `sanitize` 包，YAML 配置驱动 |
-| ② 权限 | Resource{Type,ID} 泛化匹配 | `policy` 包，Gate 不认识工具名 |
-| ③ 沙箱 | 路径强校验 + Sandbox 接口预留 | `sandbox` 包，MVP 软隔离 |
-| ④ 审计 | append-only + SHA256 hash 链 | `audit` 包，篡改可检测 |
+| ① 脱敏 | 字段级，mask/hash/redact 三策略 | `cp/sanitize/`，YAML 配置驱动 |
+| ② 权限 | Resource{Type,ID} 泛化匹配 | `cp/policy/`，Gate 不认识工具名 |
+| ③ 沙箱 | 路径强校验 + Sandbox 接口预留 | `cp/adapters/local_sandbox.py`（Docker 接口预留） |
+| ④ 审计 | append-only + SHA256 hash 链 | `cp/audit/`，篡改可检测 |
 
 ### 对抗测试（护城河证明）
 
-`kernel/test/adversarial/` 包含 8 个对抗用例，全部通过：
+`cp/tests/adversarial/` 包含 8 个对抗用例，全部通过：
 
 ```
 ✓ 读取 /etc/shadow 被拒
@@ -246,62 +212,61 @@ go run ./kernel/cmd/agentos audit show <session-id>
 ✓ PII 字段（phone/customer_id/remark）被脱敏，非 PII（amount）不动
 ```
 
-### Kernel 认证（MVP 两层）
-
-- **Socket 权限 0600**：只有启动 Kernel 的 OS 用户能连
-- **Policy 路径白名单**：StartSession 校验 Policy 在受信目录内，防加载全权限恶意 Policy
-- **接口预留**：`Authenticator` 接口为未来 mTLS/API key 留口子（MVP 用 LocalAuthenticator）
-
----
-
-## 测试
-
-```bash
-# 全部 Go 测试（含对抗 + 架构验证）
-go test ./...
-
-# Python 测试
-cd runtime && pytest -v && cd ..
-```
-
-测试覆盖（约 90 个测试）：
-- 内核基础：Resource/Policy/Gate/Sanitizer/Ledger/EventBus/Sandbox/Tools/Session/Scheduler/Pipeline/Auth
-- 对抗安全：8 个红队用例
-- 架构验证：开闭原则（加 db_query 工具零改 Kernel）
-- Runtime：rate limiter / kernel client / ReAct loop
-
 ---
 
 ## 技术栈
 
 | 层 | 技术 |
 |----|------|
-| Kernel / Gateway | Go 1.22+ |
-| Runtime | Python 3.11+，OpenAI SDK（DeepSeek 兼容） |
-| IPC | gRPC + protobuf，Unix domain socket |
+| 控制面 | Python 3.11+，asyncio，FastAPI + uvicorn |
+| State Plane | Redis（会话/checkpoint/run 事件/消息总线），开发用 fakeredis |
+| LLM | OpenAI SDK（DeepSeek 兼容）|
 | 前端 | React + Vite + TypeScript |
-| 审计 | append-only 文件 + SHA256 hash 链 |
-| 并发 | Go 信号量 + 资源限额（Account） |
+| 审计 | append-only + SHA256 hash 链 |
+| 并发 | asyncio Semaphore + 资源限额（Account）|
 
 ---
 
-## 路线图
+## V2 完成度与路线图
 
-- ✅ **阶段 0 — 安全内核 MVP**（当前）：单 agent + 脱敏 + 权限 + 审计 + Pipeline + EventBus + 并发骨架 + Gateway + Web 控制台
-- ⬜ **阶段 1 — 多 Agent 调度**：agent 生命周期、并发、agent 间通信
-- ⬜ **阶段 2 — 企业级能力**：私有化部署、多租户、可观测性、审批流（human-in-the-loop）、硬隔离沙箱（容器/microVM）
-- ⬜ **阶段 3 — 生态**：SDK / 插件机制 / 企业系统集成
+**当前（Week 6 完成，约 80%）：**
+- ✅ 五平面骨架（控制面 + State Plane Redis + 执行面沙箱接口）
+- ✅ 6 步统一管道 + 7 原子原语 + 4 复合操作（经 agent loop 可达）
+- ✅ 四道防线（脱敏/权限/沙箱/审计 hash 链）+ 8 对抗用例
+- ✅ HTTP + WebSocket API（复刻旧 gateway 契约，前端零改）
+- ✅ 双总线（审计 InProcess + 消息 Redis Stream）
+- ✅ Checkpoint 每步存、Scheduler 限流、HarnessRouter 适配
+- ✅ Run 状态落 Redis（跨副本可观测，约束 6 在可观测面成立）
+
+**待完成：**
+- ⬜ Checkpoint **恢复续跑**（存已实现，rehydrate 恢复路径未接运行时）
+- ⬜ 跨副本 **run 执行**调度（租约/工作队列）
+- ⬜ AuthPort 真实现（JWT/OAuth/租户隔离）
+- ⬜ `io` 原语真实 HTTP/MCP、`sub` handler 触发
+- ⬜ Postgres（checkpoint/审计）、Kafka（事件回放）
+- ⬜ 沙箱池生命周期管理、RemoteSandboxExecutor（沙箱经消息总线）
 
 ---
 
 ## 文档
 
-设计文档与实现计划（中文）在 `docs/superpowers/`：
-- `specs/2026-06-24-agentos-mvp-design-v2.3.md` — 完整设计文档
-- `plans/2026-06-24-agentos-mvp-v2.3.md` — 28 任务实现计划
+| 文档 | 说明 |
+|------|------|
+| `docs/AgentOS架构设计重点关注V2.md` | **V2 架构 SSOT（当前权威）** |
+| `docs/superpowers/plans/2026-07-*-python-cp-*.md` | Week 1–6 Python 控制面实现计划 |
+| `docs/legacy/` | V1（Go）设计文档（历史参考，已废弃） |
+| `docs/enterprise-java-design/` | 企业级 Java 设计探索（非当前实现） |
+
+---
+
+## Legacy（V1 Go 架构）
+
+`kernel/`、`gateway/`、`runtime/`、`pb/` 是 AgentOS 的 **V1 实现**（Go 内核 + 网关 + gRPC 运行时）。V2 重写为 Python 控制面后，这些代码**不再开发**，保留作历史参考。
+
+如需查阅 V1 的运行方式或设计，见 `docs/legacy/README.md`。
 
 ---
 
 ## 状态
 
-本项目处于 **MVP 技术验证阶段**，尚未用于生产。欢迎交流，但请勿直接用于企业生产环境（硬隔离沙箱、完整认证等企业级能力尚未实现）。
+本项目处于 **技术验证阶段**（约 80% V2 完成），尚未用于生产。欢迎交流，但请勿直接用于企业生产环境（硬隔离沙箱、完整认证等企业级能力尚未实现）。
