@@ -6,6 +6,20 @@ from typing import Any, Dict, List
 from cp.primitives.registry import PrimitiveContext
 
 
+def _drain_inbox(ctx, messages):
+    """把 ctx.inbox 各 topic 的未读消息作为 user 观察追加到 messages。
+    每条消息只注入一次(pop 后清空)。"""
+    if ctx is None or not hasattr(ctx, "inbox"):
+        return
+    for topic, msgs in list(ctx.inbox.items()):
+        while msgs:
+            msg = msgs.pop(0)
+            messages.append({
+                "role": "user",
+                "content": f"[inbox:{topic}] {json.dumps(msg, default=str)}",
+            })
+
+
 async def run_agent_loop(
     task: str,
     llm,
@@ -38,6 +52,8 @@ async def run_agent_loop(
 
     for step in range(max_steps):
         steps_used = step + 1
+        # drain inbox:sub 收到的消息作为观察注入,本步 LLM 可见
+        _drain_inbox(ctx, messages)
         assistant = await llm.chat(messages, primitive_schemas or [])
         messages.append(assistant)
 
