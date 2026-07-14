@@ -2,7 +2,7 @@
 
 > 企业级、以**安全与可控**为核心壁垒的 Agent 操作系统。让 AI agent 在严格受控的沙箱里执行任务——每个有副作用的操作都经过权限闸门、字段级脱敏、不可篡改的审计链。
 
-> ⚠️ **实现状态（2026-07，Week 6 完成）**：当前实现是 `cp/`（Python 控制面，V2 架构）。`kernel/`、`gateway/`、`runtime/`、`pb/`（Go + gRPC + 旧 Python 运行时）为 **legacy**，保留作历史参考，不再开发。下方有独立的 legacy 说明。
+> ⚠️ **实现状态（2026-07，Week 7 完成）**：当前实现是 `cp/`（Python 控制面，V2 架构）。V1（Go 内核/网关 + gRPC 运行时）已**完整移植到 Python 并删除**——Go 代码见 git 历史。
 >
 > **Python 控制面启动：** `conda run -n agentos python -m cp.server.cli serve`（默认 fakeredis + mock LLM，零配置）。HTTP + WebSocket API 复刻旧 gateway 契约，前端 `web-src/` 零改对接。详见 [V2 架构设计](docs/AgentOS架构设计重点关注V2.md)。
 
@@ -109,16 +109,12 @@ AgentOS/
 │   ├── llm/             # DeepSeek + Mock 客户端
 │   ├── checkpoint.py    # 故障恢复（快照 + 重水合）
 │   ├── scheduler/       # 并发限流
-│   └── tests/           # 196 tests（含 8 对抗用例）
+│   └── tests/           # 216 tests（含 8 对抗用例）
 ├── web-src/             # React 前端（Vite，API 契约已被 cp/ 复刻）
 ├── examples/            # demo 工作区 + 策略 + 脱敏规则（受信目录，cp/ 仍读）
-├── kernel/              # 【legacy】Go 内核（V1 架构，不再开发）
-├── gateway/             # 【legacy】Go 网关（V1 架构，不再开发）
-├── runtime/             # 【legacy】Python 运行时（V1，不再开发）
-├── pb/                  # 【legacy】gRPC 契约（V1）
 ├── docs/
 │   ├── AgentOS架构设计重点关注V2.md  # V2 架构 SSOT（当前权威）
-│   ├── superpowers/plans/            # Week 1–6 Python cp/ 实现计划
+│   ├── superpowers/plans/            # Week 1–7 Python cp/ 实现计划
 │   ├── legacy/                       # V1（Go）设计文档（历史参考）
 │   └── enterprise-java-design/       # 企业级 Java 设计探索（非当前实现）
 └── pytest.ini
@@ -262,12 +258,10 @@ conda run -n agentos python -m pytest cp/tests/adversarial/ -v
 
 ## Legacy（V1 Go 架构）
 
-`kernel/`、`gateway/`、`runtime/`、`pb/` 是 AgentOS 的 **V1 实现**（Go 内核 + 网关 + gRPC 运行时）。V2 重写为 Python 控制面后，这些代码**不再开发**，保留作历史参考。
-
-如需查阅 V1 的运行方式或设计，见 `docs/legacy/README.md`。
+AgentOS 最初是 Go 实现（安全内核 + 网关 + gRPC 运行时）。V2 重写为 Python 控制面（`cp/`）后，Go 代码已**完整移植验证并从仓库删除**——安全逻辑零退化(8 对抗用例忠实移植)。如需查阅 V1 的设计或运行方式,见 git 历史或 `docs/legacy/`。
 
 ---
 
 ## 状态
 
-本项目处于 **技术验证阶段**（约 80% V2 完成），尚未用于生产。欢迎交流，但请勿直接用于企业生产环境（硬隔离沙箱、完整认证等企业级能力尚未实现）。
+本项目处于 **技术验证阶段**（约 85% V2 完成），尚未用于生产。欢迎交流，但请勿直接用于企业生产环境（硬隔离沙箱、完整认证等企业级能力尚未实现）。
