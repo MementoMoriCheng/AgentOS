@@ -20,6 +20,7 @@ class PrimitiveContext:
         self.bus = bus
         self.state = state
         self.run_id = run_id  # 当前 run id,事件用它关联 run(WS 补播/实时)
+        self.inbox = {}  # topic -> [msg];sub 收到消息写这里,agent loop 每步 drain
 
 
 class Primitive(Protocol):

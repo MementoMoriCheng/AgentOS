@@ -4,16 +4,16 @@ from cp.resource import Resource
 
 
 class SubPrimitive:
-    """sub 原语:订阅 topic。handler_desc 是 agent 任务描述(执行时用)。
-    当前实现:仅注册订阅(handler 收到消息时 no-op);真实 handler 触发分发待实现。"""
+    """sub 原语:订阅 topic。handler 收到消息时写入 ctx.inbox[topic]。
+    agent loop 每步后检查 inbox,把新消息注入观察。"""
     name = "sub"
 
     def schema(self) -> Dict[str, Any]:
-        return {"name": "sub", "description": "Subscribe to a topic.",
+        return {"name": "sub", "description": "Subscribe to a topic; messages arrive in agent inbox.",
                 "parameters": {"type": "object",
                                "properties": {"topic": {"type": "string"},
                                               "handler_desc": {"type": "string"}},
-                               "required": ["topic", "handler_desc"]}}
+                               "required": ["topic"]}}
 
     def permission_key(self, params: Dict[str, Any]) -> Resource:
         return Resource(type="topic", id=params.get("topic", ""))
@@ -23,10 +23,11 @@ class SubPrimitive:
         handler_desc = params.get("handler_desc", "")
         if ctx.bus is None:
             return PrimitiveResult(status="error", error="no message bus in context")
+        ctx.inbox.setdefault(topic, [])
 
-        # 注册一个收集 handler(当前 no-op:仅注册;事件到达时分发逻辑待实现)
+        # handler:消息进收件箱,agent loop 下一步可见
         async def _collector(msg):
-            pass
+            ctx.inbox[topic].append(msg)
 
         ctx.bus.subscribe(topic, _collector)
         return PrimitiveResult(status="success", data={"topic": topic, "handler_desc": handler_desc, "subscribed": True})
