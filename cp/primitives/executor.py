@@ -29,7 +29,7 @@ class PrimitiveExecutor:
         # 步骤1:查找原语
         prim, ok = self.registry.get(prim_name)
         if not ok:
-            await self.bus.publish(Event(type="primitive.denied", session_id=sess.id, tool=prim_name, params=params))
+            await self.bus.publish(Event(type="primitive.denied", session_id=sess.id, run_id=ctx.run_id, tool=prim_name, params=params))
             return PrimitiveResponse(allowed=False, message="unknown primitive")
 
         # 步骤2:permission_key(纯计算)
@@ -37,25 +37,25 @@ class PrimitiveExecutor:
 
         # 步骤3:权限检查
         if not sess.gate.allowed(prim_name, res):
-            await self.bus.publish(Event(type="primitive.denied", session_id=sess.id, tool=prim_name, params=params))
+            await self.bus.publish(Event(type="primitive.denied", session_id=sess.id, run_id=ctx.run_id, tool=prim_name, params=params))
             return PrimitiveResponse(allowed=False, message="permission denied")
 
         # 步骤3.5:配额
         try:
             await sess.account.charge(Usage(steps=1))
         except QuotaExceeded:
-            await self.bus.publish(Event(type="quota.exceeded", session_id=sess.id, tool=prim_name, params=params))
+            await self.bus.publish(Event(type="quota.exceeded", session_id=sess.id, run_id=ctx.run_id, tool=prim_name, params=params))
             return PrimitiveResponse(errored=True, message="quota exceeded")
 
         # 步骤4:执行原语(原语内部路由)
         try:
             presult: PrimitiveResult = await prim.execute(ctx, params)
         except Exception as e:
-            await self.bus.publish(Event(type="primitive.errored", session_id=sess.id, tool=prim_name, params=params))
+            await self.bus.publish(Event(type="primitive.errored", session_id=sess.id, run_id=ctx.run_id, tool=prim_name, params=params))
             return PrimitiveResponse(errored=True, message=f"primitive error: {e}")
 
         if presult.status != "success":
-            await self.bus.publish(Event(type="primitive.errored", session_id=sess.id, tool=prim_name, params=params))
+            await self.bus.publish(Event(type="primitive.errored", session_id=sess.id, run_id=ctx.run_id, tool=prim_name, params=params))
             return PrimitiveResponse(errored=True, message=presult.error or "primitive failed")
 
         result_data = presult.data
@@ -69,7 +69,7 @@ class PrimitiveExecutor:
 
         # 步骤6:审计
         await self.bus.publish(Event(
-            type="primitive.called", session_id=sess.id, tool=prim_name,
+            type="primitive.called", session_id=sess.id, run_id=ctx.run_id, tool=prim_name,
             params=params, result=result_data, sanitize=san_summary,
         ))
 

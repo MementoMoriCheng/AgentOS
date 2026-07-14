@@ -13,12 +13,13 @@ class PrimitiveResult:
 
 class PrimitiveContext:
     """原语执行上下文:持有 session/sandbox_id/sandbox/bus/state 等依赖。"""
-    def __init__(self, session=None, sandbox_id="", sandbox=None, bus=None, state=None):
+    def __init__(self, session=None, sandbox_id="", sandbox=None, bus=None, state=None, run_id=""):
         self.session = session
         self.sandbox_id = sandbox_id
         self.sandbox = sandbox
         self.bus = bus
         self.state = state
+        self.run_id = run_id  # 当前 run id,事件用它关联 run(WS 补播/实时)
 
 
 class Primitive(Protocol):
