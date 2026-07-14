@@ -2,7 +2,7 @@
 
 > 企业级、以**安全与可控**为核心壁垒的 Agent 操作系统。让 AI agent 在严格受控的沙箱里执行任务——每个有副作用的操作都经过权限闸门、字段级脱敏、不可篡改的审计链。
 
-> ⚠️ **实现状态（2026-07，Week 7 完成）**：当前实现是 `cp/`（Python 控制面，V2 架构）。V1（Go 内核/网关 + gRPC 运行时）已**完整移植到 Python 并删除**——Go 代码见 git 历史。
+> ⚠️ **实现状态（2026-07，Week 8 完成）**：当前实现是 `cp/`（Python 控制面，V2 架构）。V1（Go 内核/网关 + gRPC 运行时）已**完整移植到 Python 并删除**——Go 代码见 git 历史。
 >
 > **Python 控制面启动：** `conda run -n agentos python -m cp.server.cli serve`（默认 fakeredis + mock LLM，零配置）。HTTP + WebSocket API 复刻旧 gateway 契约，前端 `web-src/` 零改对接。详见 [V2 架构设计](docs/AgentOS架构设计重点关注V2.md)。
 
@@ -93,28 +93,30 @@ Pipeline / Gate / Sanitizer / EventBus **零行改动**。这一点由架构验�
 AgentOS/
 ├── cp/                  # 【当前实现】Python 控制面（V2 架构）
 │   ├── server/          # FastAPI HTTP + WebSocket 服务层
-│   │   ├── app.py       # 复刻旧 gateway API 契约
-│   │   ├── runmgr.py    # 异步 Run 生命周期 + 事件收集
+│   │   ├── app.py       # 复刻旧 gateway API 契约 + 认证中间件
+│   │   ├── runmgr.py    # 异步 Run 生命周期 + 事件收集 + 租约/审计
 │   │   ├── redis_store.py # Run 状态外部存储（跨副本可观测）
-│   │   └── cli.py       # python -m cp.server.cli serve
+│   │   ├── run_lease.py # Run 执行租约（Redis 分布式锁，跨副本互斥）
+│   │   └── cli.py       # python -m cp.server.cli serve（组装 auth+audit+lease）
+│   ├── auth/            # 认证（Identity + ApiKeyAuthPort + LocalAuthenticator）
 │   ├── primitives/      # 7 原子原语 + 4 复合操作 + executor + registry
 │   ├── pipeline/        # 6 步统一管道
-│   ├── policy/          # Policy + Gate（权限匹配）
+│   ├── policy/          # Policy + Gate（权限匹配 + 租户隔离）
 │   ├── sanitize/        # 脱敏层（第一道防线）
-│   ├── audit/           # hash 链账本
+│   ├── audit/           # hash 链账本 + LedgerAuditPort（AuditPort 适配器）
 │   ├── eventbus/        # 异步事件总线（审计）
-│   ├── adapters/        # Port 适配器（local_sandbox/state、redis_bus、docker）
+│   ├── adapters/        # Port 适配器（local/remote_sandbox、state、redis_bus、docker）
 │   ├── orchestration/   # 多 agent 编排模式（顺序链 + fan-out/fan-in）
 │   ├── harness/         # V2 Part 2 Harness 适配层
 │   ├── llm/             # DeepSeek + Mock 客户端
 │   ├── checkpoint.py    # 故障恢复（快照 + 重水合）
 │   ├── scheduler/       # 并发限流
-│   └── tests/           # 216 tests（含 8 对抗用例）
+│   └── tests/           # 245 tests（含 8 对抗用例）
 ├── web-src/             # React 前端（Vite，API 契约已被 cp/ 复刻）
 ├── examples/            # demo 工作区 + 策略 + 脱敏规则（受信目录，cp/ 仍读）
 ├── docs/
 │   ├── AgentOS架构设计重点关注V2.md  # V2 架构 SSOT（当前权威）
-│   ├── superpowers/plans/            # Week 1–7 Python cp/ 实现计划
+│   ├── superpowers/plans/            # Week 1–8 Python cp/ 实现计划
 │   ├── legacy/                       # V1（Go）设计文档（历史参考）
 │   └── enterprise-java-design/       # 企业级 Java 设计探索（非当前实现）
 └── pytest.ini
@@ -173,7 +175,7 @@ conda run -n agentos python -m cp.server.cli serve --redis-url redis://localhost
 ### 4. 测试
 
 ```bash
-# 全回归（196 passed, 9 skipped）
+# 全回归（245 passed, 9 skipped）
 conda run -n agentos python -m pytest cp/ -v
 
 # 对抗用例（8 例，护城河证明）
@@ -225,23 +227,26 @@ conda run -n agentos python -m pytest cp/tests/adversarial/ -v
 
 ## V2 完成度与路线图
 
-**当前（Week 7 完成，约 85%）：**
+**当前（Week 8 完成，约 92%）：**
 - ✅ 五平面骨架（控制面 + State Plane Redis + 执行面沙箱接口）
 - ✅ 6 步统一管道 + 7 原子原语 + 5 复合操作（含 compose 编排，经 agent loop 可达）
 - ✅ 四道防线（脱敏/权限/沙箱/审计 hash 链）+ 8 对抗用例
-- ✅ HTTP + WebSocket API（复刻旧 gateway 契约，前端零改）
+- ✅ HTTP + WebSocket API（复刻旧 gateway 契约，前端零改）+ **认证中间件**（Bearer API key）
 - ✅ 双总线（审计 InProcess + 消息 Redis Stream）
 - ✅ Checkpoint 每步存 **+ 崩溃恢复续跑**（load_latest→rehydrate→续跑）
 - ✅ Scheduler 限流、HarnessRouter 适配
 - ✅ Run 状态落 Redis（跨副本可观测，约束 6 在可观测面成立）
 - ✅ `io` 原语真联网（httpx）、`sub` 消息分发（inbox→loop 注入）
+- ✅ **安全闭环**：入口认证（API key→Identity）→ 租户隔离（每租户独立 policy，路径白名单天然隔离）→ 出口审计（LedgerAuditPort 接 hash 链，5 个 Port 全有真 adapter）
+- ✅ **跨副本执行互斥**：RedisRunLease 分布式锁（SET NX EX + 心跳续约），持租约副本能跑，挂了/释放后其他副本可接管
+- ✅ **沙箱经消息总线**：RemoteSandboxExecutor（actions.{sid} 请求 / observations 响应，correlation_id 匹配），约束 5/7 端到端成立
 
 **待完成：**
-- ⬜ 跨副本 **run 执行**调度（租约/工作队列）
-- ⬜ AuthPort 真实现（JWT/OAuth/租户隔离）
+- ⬜ 认证增强（JWT/OAuth/mTLS；当前为 API key）、前端认证 UI
+- ⬜ WebSocket 认证（当前仅 HTTP REST 有认证中间件）
 - ⬜ `io` MCP 协议、`sub` 跨副本消息
 - ⬜ Postgres（checkpoint/审计）、Kafka（事件回放）
-- ⬜ 沙箱池生命周期管理、RemoteSandboxExecutor（沙箱经消息总线）
+- ⬜ 沙箱池 warm pool、warm 预热（当前 RemoteSandboxExecutor 单实例）
 
 ---
 
@@ -250,7 +255,7 @@ conda run -n agentos python -m pytest cp/tests/adversarial/ -v
 | 文档 | 说明 |
 |------|------|
 | `docs/AgentOS架构设计重点关注V2.md` | **V2 架构 SSOT（当前权威）** |
-| `docs/superpowers/plans/2026-07-*-python-cp-*.md` | Week 1–6 Python 控制面实现计划 |
+| `docs/superpowers/plans/2026-07-*-python-cp-*.md` | Week 1–8 Python 控制面实现计划 |
 | `docs/legacy/` | V1（Go）设计文档（历史参考，已废弃） |
 | `docs/enterprise-java-design/` | 企业级 Java 设计探索（非当前实现） |
 
@@ -264,4 +269,4 @@ AgentOS 最初是 Go 实现（安全内核 + 网关 + gRPC 运行时）。V2 重
 
 ## 状态
 
-本项目处于 **技术验证阶段**（约 85% V2 完成），尚未用于生产。欢迎交流，但请勿直接用于企业生产环境（硬隔离沙箱、完整认证等企业级能力尚未实现）。
+本项目处于 **技术验证阶段**（约 92% V2 完成），尚未用于生产。欢迎交流，但请勿直接用于企业生产环境（mTLS/OAuth、Postgres/Kafka、前端认证等企业级能力尚未实现）。
