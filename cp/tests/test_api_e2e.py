@@ -358,3 +358,48 @@ async def test_e2e_checkpoint_full_resume(fake_redis):
     assert run.status == "ended"
     assert run.termination == "completed"
     assert run.session_id == fixed_sid
+
+
+# ---------- Week 8 硬里程碑:安全闭环(认证身份 → 全局审计 → hash 链不可篡改)----------
+async def test_week8_audit_hash_chain_intact_after_authenticated_run(fake_redis):
+    """安全闭环 e2e:带 identity 的 run → 每条事件经 audit_port 记入全局 hash 链 ledger
+    → verify_chain 完好(不可篡改)。identity 经 submit 线程注入(T2/T3)。
+
+    注:HTTP 认证闸门(无 key->401)与 build_app 全链路由 test_cli_wiring 覆盖(同步,
+    TestClient);本测试用 async + 直接 mgr.submit 复用测试事件循环,稳定验证审计闭环。
+    """
+    import asyncio
+    from cp.adapters.local_sandbox import LocalSandboxExecutor
+    from cp.audit.audit_port import LedgerAuditPort
+    from cp.audit.ledger import Ledger, verify_chain
+    from cp.auth.auth import Identity
+    from cp.llm.mock import MockLLMClient
+    from cp.primitives.executor import PrimitiveExecutor
+    from cp.primitives.registry import PrimitiveRegistry
+    from cp.server.runmgr import RunManager
+    from cp.tools.tool import Registry as ToolRegistry
+
+    audit_dir = tempfile.mkdtemp()
+    audit_port = LedgerAuditPort(Ledger(os.path.join(audit_dir, "server.log")))
+    sandbox = LocalSandboxExecutor(ToolRegistry())
+    mgr = RunManager(ToolRegistry(), sandbox, RedisStatePort(fake_redis),
+                     executor_factory=lambda b: PrimitiveExecutor(PrimitiveRegistry(), b),
+                     llm=MockLLMClient([{"role": "assistant", "content": "done"}]),
+                     audit_port=audit_port)
+    pol_dir = tempfile.mkdtemp()
+    with open(os.path.join(pol_dir, "open.yaml"), "w", encoding="utf-8") as f:
+        f.write("permissions: []\nmax_steps: 3\n")
+
+    # 带 identity 提交(模拟经认证的调用方)
+    run = await mgr.submit("task", os.path.join(pol_dir, "open.yaml"), "",
+                           identity=Identity(tenant="acme", user="alice"))
+    for _ in range(100):
+        if run.status == "ended":
+            break
+        await asyncio.sleep(0.02)
+    assert run.status == "ended"
+
+    # 全局审计 ledger:收到 run 事件 + hash 链完好(不可篡改)
+    entries = await audit_port._ledger.read_all()
+    assert len(entries) >= 2, "审计 ledger 应至少有 run.started + run.ended"
+    assert verify_chain(entries) is None, "审计 hash 链断裂"
