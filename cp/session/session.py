@@ -17,9 +17,11 @@ class Session:
     sanitizer: Sanitizer
     account: Account
     ledger: Ledger
+    tenant_id: str = ""  # 租户隔离标识；空=不隔离（开发默认）
 
     @classmethod
-    def new(cls, sid: str, identity: str, pol: Policy, san: Sanitizer, ledger: Ledger) -> "Session":
+    def new(cls, sid: str, identity: str, pol: Policy, san: Sanitizer, ledger: Ledger,
+            tenant_id: str = "") -> "Session":
         return cls(
             id=sid,
             identity=identity,
@@ -28,4 +30,5 @@ class Session:
             sanitizer=san,
             account=Account(ResourceQuota(max_steps=pol.max_steps, max_tokens=pol.max_tokens)),
             ledger=ledger,
+            tenant_id=tenant_id,
         )

@@ -37,6 +37,18 @@ class Run:
     subscribers: List["asyncio.Queue"] = field(default_factory=list)
 
 
+def _tenant_policy_path(policy_path: str, identity) -> str:
+    """按 identity.tenant 选租户专属 policy(若存在)。
+
+    租户隔离 = 不同租户用不同 policy 文件,路径白名单天然隔离。
+    default/空 tenant 用原 policy_path。
+    """
+    if identity is None or not identity.tenant or identity.tenant == "default":
+        return policy_path
+    candidate = os.path.join(os.path.dirname(policy_path), f"{identity.tenant}.yaml")
+    return candidate if os.path.exists(candidate) else policy_path
+
+
 class RunManager:
     """管理 run:建 session → 后台跑 agent loop → 收集事件 → 标 ended。"""
 
@@ -66,8 +78,10 @@ class RunManager:
                      max_steps: int = 20, session_id: str = None, identity=None) -> Run:
         """提交 run。用构造时注入的 executor_factory + llm 跑 agent loop。
         session_id:固定会话 id(用于崩溃恢复:匹配已有 checkpoint 续跑)。"""
+        policy_path = _tenant_policy_path(policy_path, identity)
         pol = load_policy(policy_path)
         sess_identity = identity.user if identity is not None else "local"
+        tenant_id = identity.tenant if identity is not None else ""
         san = load_sanitizer(sanitization_path) if sanitization_path else Sanitizer.new_from_rules([])
         run_id = f"run-{uuid.uuid4().hex[:12]}"
         if session_id is None:
@@ -94,11 +108,13 @@ class RunManager:
                 remaining = max(1, max_steps - restored["step"])
             else:
                 sess = Session.new(session_id, sess_identity, pol, san,
-                                   Ledger(os.path.join(self.audit_dir, f"{session_id}.log")))
+                                   Ledger(os.path.join(self.audit_dir, f"{session_id}.log")),
+                                   tenant_id=tenant_id)
                 remaining = max_steps
         else:
             sess = Session.new(session_id, sess_identity, pol, san,
-                               Ledger(os.path.join(self.audit_dir, f"{session_id}.log")))
+                               Ledger(os.path.join(self.audit_dir, f"{session_id}.log")),
+                               tenant_id=tenant_id)
             remaining = max_steps
 
         audit_bus = InProcess()  # 审计/可观测事件(executor/pipeline 用,1 参 publish)
