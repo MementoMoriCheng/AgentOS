@@ -1,6 +1,11 @@
 """异步 Run Manager:管理 run 生命周期 + 事件收集。
-每个 run 一个 InProcess bus 收集事件;后台 asyncio task 跑 agent loop。
-WS 端点补播历史(run.events) + 实时推送(subscriber queue)。"""
+每个 run 一个 InProcess audit bus 收集可观测事件;后台 asyncio task 跑 agent loop。
+
+双总线设计(Week 6 T2 正确性修复):
+  - audit_bus = InProcess():executor/pipeline 的审计/可观测事件(primitive.called/run.*)。1 参 publish(Event)。
+  - msg_bus   = RedisStreamMessageBus(可空):ctx.bus,pub/sub/复合操作的 topic 消息。2 参 publish(topic, payload)。
+此前 ctx.bus 被错设成 InProcess,导致 pub/sub 一调就崩(它们调 2 参 publish)。
+"""
 import asyncio
 import os
 import time
@@ -14,6 +19,7 @@ from cp.eventbus.bus import Event, InProcess
 from cp.policy.policy import load_from_file as load_policy
 from cp.primitives.registry import PrimitiveContext
 from cp.sanitize.sanitizer import Sanitizer, load_from_file as load_sanitizer
+from cp.server.serialize import event_to_agent_json
 from cp.session.session import Session
 from cp.tools.tool import Registry
 
@@ -36,13 +42,23 @@ class RunManager:
 
     def __init__(self, registry: Registry, sandbox, state,
                  executor_factory: Optional[Callable] = None, llm=None,
-                 audit_dir: str = "./audit"):
+                 audit_dir: str = "./audit",
+                 msg_bus=None,            # 消息总线(pub/sub/复合操作用),None 时 ctx.bus=None
+                 prim_registry=None,      # 用于 schemas() 喂给 LLM
+                 scheduler=None,          # T4:并发限流
+                 harness_router=None,     # T5:选 system_prompt
+                 run_store=None):         # T6:Run 元数据/事件外部存储
         self.registry = registry
         self.sandbox = sandbox
         self.state = state
-        self.executor_factory = executor_factory  # (bus) -> PrimitiveExecutor
+        self.executor_factory = executor_factory  # (audit_bus) -> PrimitiveExecutor
         self.llm = llm
         self.audit_dir = audit_dir
+        self.msg_bus = msg_bus
+        self.prim_registry = prim_registry
+        self.scheduler = scheduler
+        self.harness_router = harness_router
+        self.run_store = run_store
         self._runs: Dict[str, Run] = {}
         self._mu = asyncio.Lock()
 
@@ -58,56 +74,105 @@ class RunManager:
         ledger = Ledger(os.path.join(self.audit_dir, f"{session_id}.log"))
         sess = Session.new(session_id, "local", pol, san, ledger)
 
-        bus = InProcess()
+        audit_bus = InProcess()  # 审计/可观测事件(executor/pipeline 用,1 参 publish)
         sandbox_id = await self.sandbox.create({"workspace": "."})
 
-        executor = self.executor_factory(bus) if self.executor_factory else None
+        executor = self.executor_factory(audit_bus) if self.executor_factory else None
         ctx = PrimitiveContext(
             session=sess, sandbox_id=sandbox_id, sandbox=self.sandbox,
-            bus=bus, state=self.state, run_id=run_id,
+            bus=self.msg_bus,  # 关键:ctx.bus = 消息总线(2 参 publish);None 时 pub/sub 报错
+            state=self.state, run_id=run_id,
         )
+
+        schemas = self.prim_registry.schemas() if self.prim_registry else []
+        system_prompt = self._select_system_prompt(task)
+        on_step = self._make_on_step(session_id, sess)
 
         run = Run(run_id=run_id, session_id=session_id, task=task)
 
-        # 事件收集器:订阅 bus,追加到 run.events,推给 WS 订阅者
         async def _collector(e: Event):
             run.events.append(e)
+            if self.run_store:
+                await self.run_store.append_event(run_id, event_to_agent_json(e))
             for q in list(run.subscribers):
                 try:
                     q.put_nowait(e)
                 except asyncio.QueueFull:
                     pass
 
-        bus.subscribe(_collector)
+        audit_bus.subscribe(_collector)
 
         async with self._mu:
             self._runs[run_id] = run
+        if self.run_store:
+            await self.run_store.save_meta(run_id, {
+                "run_id": run_id, "session_id": session_id, "task": task,
+                "status": "running", "started_at": run.started_at,
+            })
 
-        await bus.publish(Event(type="run.started", session_id=session_id, run_id=run_id,
-                                payload={"task": task, "max_steps": max_steps}))
-
-        asyncio.create_task(self._run_agent(run, sess, ctx, executor, bus, max_steps))
+        await audit_bus.publish(Event(type="run.started", session_id=session_id, run_id=run_id,
+                                      payload={"task": task, "max_steps": max_steps}))
+        asyncio.create_task(self._run_agent(run, sess, ctx, executor, audit_bus,
+                                            schemas, system_prompt, on_step, max_steps))
         return run
 
-    async def _run_agent(self, run: Run, sess: Session, ctx: PrimitiveContext,
-                         executor, bus: InProcess, max_steps: int):
+    async def _run_agent(self, run: Run, sess: Session, ctx: PrimitiveContext, executor,
+                         audit_bus: InProcess, schemas, system_prompt, on_step, max_steps: int):
+        release = await self.scheduler.acquire() if self.scheduler else None
         try:
-            result = await run_agent_loop(run.task, self.llm, executor, sess, ctx, [], max_steps)
+            result = await run_agent_loop(
+                run.task, self.llm, executor, sess, ctx,
+                primitive_schemas=schemas,
+                system_prompt=system_prompt,
+                on_step=on_step,
+                max_steps=max_steps,
+            )
             run.final_answer = result["final_answer"]
             run.termination = result["termination"]
-            await bus.publish(Event(
-                type="run.ended", session_id=run.session_id, run_id=run.run_id,
-                payload={"termination": run.termination, "final_answer": run.final_answer},
-            ))
         except Exception as e:  # noqa: BLE001 - 任何异常都标 crashed 并发 run.ended
             run.termination = "crashed"
             run.final_answer = f"error: {e}"
-            await bus.publish(Event(
-                type="run.ended", session_id=run.session_id, run_id=run.run_id,
-                payload={"termination": "crashed", "final_answer": run.final_answer},
-            ))
         finally:
+            if release:
+                release()
+            await audit_bus.publish(Event(
+                type="run.ended", session_id=run.session_id, run_id=run.run_id,
+                payload={"termination": run.termination, "final_answer": run.final_answer},
+            ))
+            if self.run_store:
+                await self.run_store.save_meta(run.run_id, {
+                    "run_id": run.run_id, "session_id": run.session_id, "task": run.task,
+                    "status": "ended", "started_at": run.started_at,
+                    "final_answer": run.final_answer, "termination": run.termination,
+                })
             run.status = "ended"
+
+    def _select_system_prompt(self, task: str) -> Optional[str]:
+        """T5:HarnessRouter 按 task_keywords 选 profile 的 system_prompt。"""
+        if not self.harness_router:
+            return None
+        profile = self.harness_router.route(task)
+        if profile and profile.system_prompt_template:
+            return profile.system_prompt_template
+        return None
+
+    def _make_on_step(self, session_id: str, sess: Session):
+        """T3:每步存 checkpoint。返回 async on_step(messages, step) 或 None。"""
+        if self.state is None:
+            return None
+        from cp.checkpoint import Checkpoint, SessionSnapshot
+        ckpt = Checkpoint(self.state)
+
+        async def _on_step(messages, step):
+            snap = SessionSnapshot(
+                session_id=session_id,
+                identity=sess.identity,
+                used_steps=sess.account._used.steps,
+                used_tokens=sess.account._used.tokens,
+                messages=list(messages), step=step,
+            )
+            await ckpt.save(snap)
+        return _on_step
 
     def get(self, run_id: str) -> Optional[Run]:
         return self._runs.get(run_id)

@@ -14,16 +14,22 @@ async def run_agent_loop(
     ctx: PrimitiveContext,
     primitive_schemas: List[Dict[str, Any]] = None,
     max_steps: int = 20,
+    system_prompt: str = None,
+    on_step=None,
+    initial_messages: List[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Agent Loop。llm 推理 → 原语执行 → 观察 → 循环。
     executor 可以是 PrimitiveExecutor 或 None(无工具执行)。
+    system_prompt:HarnessRouter 选的 profile prompt(可空,空用默认)。
+    on_step:async (messages, step) 每步后调(Checkpoint 存)。
+    initial_messages:恢复续跑时传入(可空)。
     返回 {final_answer, steps_used, termination}。"""
-    system_prompt = (
+    sys_msg = system_prompt or (
         "You are an autonomous agent. You have access to primitives (tools). "
         "Call a tool to accomplish the task. When done, respond with plain text."
     )
-    messages: List[Dict[str, Any]] = [
-        {"role": "system", "content": system_prompt},
+    messages: List[Dict[str, Any]] = list(initial_messages) if initial_messages else [
+        {"role": "system", "content": sys_msg},
         {"role": "user", "content": task},
     ]
     steps_used = 0
@@ -38,6 +44,8 @@ async def run_agent_loop(
         tool_calls = assistant.get("tool_calls")
         if not tool_calls:
             final_answer = assistant.get("content", "(no content)")
+            if on_step:
+                await on_step(messages, steps_used)
             break
 
         # 执行每个原语调用(经安全管道)
@@ -60,8 +68,12 @@ async def run_agent_loop(
             messages.append({
                 "role": "tool", "tool_call_id": tc["id"], "name": name, "content": content,
             })
+        if on_step:
+            await on_step(messages, steps_used)
     else:
         termination = "step_limit"
         final_answer = f"Reached step limit ({max_steps})."
+        if on_step:
+            await on_step(messages, steps_used)
 
     return {"final_answer": final_answer, "steps_used": steps_used, "termination": termination}
