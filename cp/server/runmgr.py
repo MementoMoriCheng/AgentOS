@@ -60,7 +60,8 @@ class RunManager:
                  scheduler=None,          # T4:并发限流
                  harness_router=None,     # T5:选 system_prompt
                  run_store=None,          # T6:Run 元数据/事件外部存储
-                 run_lease=None):         # Week8:Run 执行租约(跨副本互斥)
+                 run_lease=None,          # Week8:Run 执行租约(跨副本互斥)
+                 audit_port=None):        # Week8:全局审计 sink(bus 事件 -> hash 链)
         self.registry = registry
         self.sandbox = sandbox
         self.state = state
@@ -73,6 +74,7 @@ class RunManager:
         self.harness_router = harness_router
         self.run_store = run_store
         self.run_lease = run_lease
+        self.audit_port = audit_port
         self._runs: Dict[str, Run] = {}
         self._mu = asyncio.Lock()
 
@@ -146,6 +148,13 @@ class RunManager:
                     pass
 
         audit_bus.subscribe(_collector)
+        # 全局审计 sink:每条事件旁路记入 hash 链 ledger(Week8 安全闭环)
+        if self.audit_port is not None:
+            _audit_port = self.audit_port
+
+            async def _audit_sink(e: Event):
+                await _audit_port.record(event_to_agent_json(e))
+            audit_bus.subscribe(_audit_sink)
 
         async with self._mu:
             self._runs[run_id] = run
