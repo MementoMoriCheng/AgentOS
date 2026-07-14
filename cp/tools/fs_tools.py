@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from typing import Any, Dict
@@ -23,11 +24,14 @@ class FSReadTool:
     def permission_key(self, params: Dict[str, Any]) -> Resource:
         return Resource(type="path", id=params.get("path", ""))
 
-    def execute(self, ctx: Any, params: Dict[str, Any]) -> ToolResult:
+    async def execute(self, ctx: Any, params: Dict[str, Any]) -> ToolResult:
         safe = resolve(params.get("path", ""))
-        with open(safe, "r", encoding="utf-8") as f:
-            content = f.read()
+        content = await asyncio.to_thread(self._read_file, safe)
         return ToolResult(data={"content": content})
+
+    def _read_file(self, path):
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
 
 
 class FSWriteTool:
@@ -47,16 +51,19 @@ class FSWriteTool:
     def permission_key(self, params: Dict[str, Any]) -> Resource:
         return Resource(type="path", id=params.get("path", ""))
 
-    def execute(self, ctx: Any, params: Dict[str, Any]) -> ToolResult:
+    async def execute(self, ctx: Any, params: Dict[str, Any]) -> ToolResult:
         safe = resolve(params.get("path", ""))
         content = params.get("content", "")
+        await asyncio.to_thread(self._write_file, safe, content)
+        return ToolResult(data={"bytes_written": len(content)})
+
+    def _write_file(self, safe, content):
         os.makedirs(os.path.dirname(safe), exist_ok=True)
         # 原子写:先写 .tmp,再 rename。崩溃时要么旧要么新,无半成品。
         tmp = safe + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(content)
         os.replace(tmp, safe)
-        return ToolResult(data={"bytes_written": len(content)})
 
 
 class FSListTool:
@@ -75,7 +82,10 @@ class FSListTool:
     def permission_key(self, params: Dict[str, Any]) -> Resource:
         return Resource(type="path", id=params.get("path", ""))
 
-    def execute(self, ctx: Any, params: Dict[str, Any]) -> ToolResult:
+    async def execute(self, ctx: Any, params: Dict[str, Any]) -> ToolResult:
         safe = resolve(params.get("path", ""))
-        names = sorted(os.listdir(safe))
+        names = await asyncio.to_thread(self._list_dir, safe)
         return ToolResult(data={"entries": names})
+
+    def _list_dir(self, path):
+        return sorted(os.listdir(path))
