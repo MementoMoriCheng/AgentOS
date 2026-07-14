@@ -146,3 +146,126 @@ def test_adversarial_sanitization_masks_pii():
     assert out["phone"] != "13812341234"
     assert "remark" not in out
     assert out["amount"] == 120
+
+
+# ---------- Week 6 T8 硬里程碑 ----------
+def test_e2e_composite_reachable_via_loop(fake_redis):
+    """复合操作 spawn_agent 经 agent loop 可达:LLM 发 tool_call → executor 执行 →
+    事件流含 primitive.called(spawn_agent)。"""
+    from cp.adapters.redis_bus import RedisStreamMessageBus
+    from cp.primitives.composite import register_composites
+    from cp.server.redis_store import RedisRunStore
+    prim = PrimitiveRegistry()
+    register_composites(prim)
+    store = RedisRunStore(fake_redis)
+
+    class _Sbx:
+        async def create(self, c): return "sbx"
+        async def exec_action(self, s, a): return {"data": {}}
+        async def destroy(self, s): pass
+
+    mgr = RunManager(None, _Sbx(), RedisStatePort(fake_redis),
+                     executor_factory=lambda b: PrimitiveExecutor(prim, b),
+                     llm=MockLLMClient([
+                         {"role": "assistant", "content": "fork",
+                          "tool_calls": [{"id": "1", "type": "function",
+                                          "function": {"name": "spawn_agent",
+                                                       "arguments": json.dumps({"agent_type": "researcher",
+                                                                                "prompt": "find x"})}}]},
+                         {"role": "assistant", "content": "done"}]),
+                     msg_bus=RedisStreamMessageBus(fake_redis), prim_registry=prim, run_store=store)
+    tmp = tempfile.mkdtemp()
+    # policy 放行 spawn_agent(Gate 对 composite 走精确匹配 pattern==id)
+    with open(os.path.join(tmp, "p.yaml"), "w") as f:
+        f.write("permissions:\n"
+                "  - resource_type: composite\n"
+                "    pattern: spawn_agent\n"
+                "    actions: [spawn_agent]\n"
+                "max_steps: 5\n")
+    app = create_app(mgr, tmp, tempfile.mkdtemp(), run_store=store)
+    rid = TestClient(app).post("/api/runs", json={
+        "task": "fork", "policy": "p.yaml", "sanitization": ""}).json()["run_id"]
+    run = mgr.get(rid)
+    _wait_ended(run)
+    assert run.status == "ended"
+    # 经 executor 执行 → audit 事件含 primitive.called(spawn_agent)
+    types = [e.type for e in run.events]
+    assert "primitive.called" in types, f"composite 未经 executor;types={types}"
+    spawn_ev = next(e for e in run.events if e.tool == "spawn_agent")
+    assert spawn_ev.tool == "spawn_agent"
+
+
+async def test_e2e_composite_publishes_to_msg_bus(fake_redis):
+    """spawn_agent 经 executor 执行后,内部 pub 到 msg_bus Redis Stream。"""
+    from cp.adapters.redis_bus import RedisStreamMessageBus
+    from cp.primitives.composite import register_composites
+    prim = PrimitiveRegistry()
+    register_composites(prim)
+    bus = RedisStreamMessageBus(fake_redis)
+
+    class _Sbx:
+        async def create(self, c): return "sbx"
+        async def exec_action(self, s, a): return {"data": {}}
+        async def destroy(self, s): pass
+
+    mgr = RunManager(None, _Sbx(), RedisStatePort(fake_redis),
+                     executor_factory=lambda b: PrimitiveExecutor(prim, b),
+                     llm=MockLLMClient([
+                         {"role": "assistant", "content": "fork",
+                          "tool_calls": [{"id": "1", "type": "function",
+                                          "function": {"name": "spawn_agent",
+                                                       "arguments": json.dumps({"agent_type": "researcher",
+                                                                                "prompt": "find x"})}}]},
+                         {"role": "assistant", "content": "done"}]),
+                     msg_bus=bus, prim_registry=prim)
+    tmp = tempfile.mkdtemp()
+    with open(os.path.join(tmp, "p.yaml"), "w") as f:
+        f.write("permissions:\n"
+                "  - resource_type: composite\n"
+                "    pattern: spawn_agent\n"
+                "    actions: [spawn_agent]\n"
+                "max_steps: 5\n")
+    run = await mgr.submit("fork", os.path.join(tmp, "p.yaml"), "")
+    for _ in range(100):
+        if run.status == "ended":
+            break
+        import asyncio
+        await asyncio.sleep(0.02)
+    # spawn_agent 内部 pub 到 agent.researcher.created(Stream)
+    created = await fake_redis.xrange("agent.researcher.created")
+    assert len(created) == 1, "spawn_agent 未 pub 到 msg_bus"
+
+
+def test_e2e_checkpoint_resume(fake_redis):
+    """中断后 Checkpoint 恢复:跑完 run → load_latest → 验证步数+消息在快照里。"""
+    from cp.adapters.local_state import RedisStatePort
+    from cp.checkpoint import Checkpoint
+    from cp.server.redis_store import RedisRunStore
+    state = RedisStatePort(fake_redis)
+    store = RedisRunStore(fake_redis)
+
+    class _Sbx:
+        async def create(self, c): return "sbx"
+        async def exec_action(self, s, a): return {"data": {"content": "42"}}
+        async def destroy(self, s): pass
+
+    mgr = RunManager(None, _Sbx(), state,
+                     executor_factory=lambda b: PrimitiveExecutor(PrimitiveRegistry(), b),
+                     llm=MockLLMClient([{"role": "assistant", "content": "done"}]),
+                     run_store=store)
+    tmp = tempfile.mkdtemp()
+    with open(os.path.join(tmp, "p.yaml"), "w") as f:
+        f.write("permissions: []\nmax_steps: 3\n")
+    import asyncio
+    loop = asyncio.new_event_loop()
+    run = loop.run_until_complete(mgr.submit("task", os.path.join(tmp, "p.yaml"), ""))
+    for _ in range(100):
+        if run.status == "ended":
+            break
+        time.sleep(0.02)
+    ckpt = Checkpoint(state)
+    snap = loop.run_until_complete(ckpt.load_latest(run.session_id))
+    loop.close()
+    assert snap is not None, "无 checkpoint"
+    assert snap.step >= 1
+    assert any(m["role"] == "system" for m in snap.messages)
