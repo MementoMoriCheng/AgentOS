@@ -7,7 +7,7 @@ import asyncio
 import os
 from typing import List, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -16,8 +16,22 @@ from cp.server.serialize import event_to_agent_json
 
 
 def create_app(mgr: RunManager, policy_dir: str, sanitization_dir: str,
-               static_dir: Optional[str] = None, run_store=None) -> FastAPI:
+               static_dir: Optional[str] = None, run_store=None, auth_port=None) -> FastAPI:
     app = FastAPI(title="AgentOS Control Plane")
+
+    @app.middleware("http")
+    async def auth_middleware(request: Request, call_next):
+        # 默认无身份(开发模式);有 auth_port 时保护 /api/* HTTP 路由。
+        # WS(/api/events)不经 HTTP 中间件,认证留后续。
+        request.state.identity = None
+        if auth_port is not None and request.url.path.startswith("/api/"):
+            authz = request.headers.get("authorization", "")
+            key = authz[len("Bearer "):].strip() if authz.startswith("Bearer ") else ""
+            identity = await auth_port.authenticate(key) if key else None
+            if identity is None:
+                return JSONResponse({"detail": "unauthorized"}, status_code=401)
+            request.state.identity = identity
+        return await call_next(request)
 
     @app.get("/api/policies")
     async def list_policies():
@@ -56,11 +70,12 @@ def create_app(mgr: RunManager, policy_dir: str, sanitization_dir: str,
         ]
 
     @app.post("/api/runs")
-    async def submit_run(body: dict):
+    async def submit_run(body: dict, request: Request):
+        identity = getattr(request.state, "identity", None)
         task = body.get("task", "")
         policy = _resolve(body.get("policy", ""), policy_dir)
         sanitization = _resolve(body.get("sanitization", ""), sanitization_dir)
-        run = await mgr.submit(task, policy, sanitization, max_steps=20)
+        run = await mgr.submit(task, policy, sanitization, max_steps=20, identity=identity)
         return {"run_id": run.run_id, "session_id": run.session_id}
 
     @app.websocket("/api/events")

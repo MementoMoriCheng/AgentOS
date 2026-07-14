@@ -63,10 +63,11 @@ class RunManager:
         self._mu = asyncio.Lock()
 
     async def submit(self, task: str, policy_path: str, sanitization_path: str,
-                     max_steps: int = 20, session_id: str = None) -> Run:
+                     max_steps: int = 20, session_id: str = None, identity=None) -> Run:
         """提交 run。用构造时注入的 executor_factory + llm 跑 agent loop。
         session_id:固定会话 id(用于崩溃恢复:匹配已有 checkpoint 续跑)。"""
         pol = load_policy(policy_path)
+        sess_identity = identity.user if identity is not None else "local"
         san = load_sanitizer(sanitization_path) if sanitization_path else Sanitizer.new_from_rules([])
         run_id = f"run-{uuid.uuid4().hex[:12]}"
         if session_id is None:
@@ -92,11 +93,11 @@ class RunManager:
                 initial_messages = restored["messages"]
                 remaining = max(1, max_steps - restored["step"])
             else:
-                sess = Session.new(session_id, "local", pol, san,
+                sess = Session.new(session_id, sess_identity, pol, san,
                                    Ledger(os.path.join(self.audit_dir, f"{session_id}.log")))
                 remaining = max_steps
         else:
-            sess = Session.new(session_id, "local", pol, san,
+            sess = Session.new(session_id, sess_identity, pol, san,
                                Ledger(os.path.join(self.audit_dir, f"{session_id}.log")))
             remaining = max_steps
 

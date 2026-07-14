@@ -175,3 +175,56 @@ def test_cross_replica_run_visible_via_store(fake_redis):
     assert detail["run"]["run_id"] == rid
     types = [e["type"] for e in detail["events"]]
     assert "run.ended" in types
+
+
+def test_unauthorized_without_api_key(fake_redis):
+    """有 auth_port 时,无 key 或无效 key -> 401。"""
+    import asyncio
+    from cp.auth.api_key import ApiKeyAuthPort
+    auth_port = ApiKeyAuthPort(fake_redis)
+    asyncio.get_event_loop().run_until_complete(
+        auth_port.register_key("sk-valid", "acme", "alice"))
+
+    sandbox = LocalSandboxExecutor(Registry())
+    mgr = RunManager(Registry(), sandbox, RedisStatePort(fake_redis),
+                     executor_factory=lambda bus: PrimitiveExecutor(_prim_reg(), bus),
+                     llm=MockLLMClient([{"role": "assistant", "content": "done"}]))
+    pol_dir = tempfile.mkdtemp()
+    with open(os.path.join(pol_dir, "open.yaml"), "w") as f:
+        f.write("permissions: []\nmax_steps: 5\n")
+    app = create_app(mgr, pol_dir, tempfile.mkdtemp(), auth_port=auth_port)
+    client = TestClient(app)
+
+    # 无 key -> 401
+    r = client.post("/api/runs", json={"task": "x", "policy": "open.yaml", "sanitization": ""})
+    assert r.status_code == 401
+    # 无效 key -> 401
+    r = client.post("/api/runs", json={"task": "x", "policy": "open.yaml", "sanitization": ""},
+                    headers={"Authorization": "Bearer sk-bogus"})
+    assert r.status_code == 401
+
+
+def test_authorized_with_valid_api_key(fake_redis):
+    """有效 key -> 200,run 创建成功。"""
+    import asyncio
+    from cp.auth.api_key import ApiKeyAuthPort
+    auth_port = ApiKeyAuthPort(fake_redis)
+    asyncio.get_event_loop().run_until_complete(
+        auth_port.register_key("sk-valid", "acme", "alice"))
+
+    sandbox = LocalSandboxExecutor(Registry())
+    mgr = RunManager(Registry(), sandbox, RedisStatePort(fake_redis),
+                     executor_factory=lambda bus: PrimitiveExecutor(_prim_reg(), bus),
+                     llm=MockLLMClient([{"role": "assistant", "content": "done"}]))
+    pol_dir = tempfile.mkdtemp()
+    with open(os.path.join(pol_dir, "open.yaml"), "w") as f:
+        f.write("permissions: []\nmax_steps: 5\n")
+    app = create_app(mgr, pol_dir, tempfile.mkdtemp(), auth_port=auth_port)
+    client = TestClient(app)
+
+    r = client.post("/api/runs", json={"task": "x", "policy": "open.yaml", "sanitization": ""},
+                    headers={"Authorization": "Bearer sk-valid"})
+    assert r.status_code == 200
+    data = r.json()
+    assert "run_id" in data and "session_id" in data
+    _wait_ended(mgr.get(data["run_id"]))
