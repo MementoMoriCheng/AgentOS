@@ -107,3 +107,49 @@ async def test_scheduler_gates_concurrency(fake_redis):
         await asyncio.sleep(0.02)
     assert all(r.status == "ended" for r in runs)
     assert slow.max_concurrent == 1  # 串行,并发槽=1
+
+
+# ---------- T5: HarnessRouter 选 system_prompt ----------
+async def test_harness_router_selects_prompt(fake_redis):
+    """任务含 'implement' → coder profile 的 system_prompt;纯任务 → generic。"""
+    from cp.harness.profile import HarnessProfile
+    from cp.harness.router import HarnessRouter
+
+    def _make_router():
+        r = HarnessRouter()
+        r.register(HarnessProfile(name="coder", system_prompt_template="YOU ARE A CODER",
+                                  task_keywords=["code", "implement"]), is_default=False)
+        r.register(HarnessProfile(name="generic", system_prompt_template="GENERIC"), is_default=True)
+        return r
+
+    seen = {}
+
+    class _SpyLLM:
+        async def chat(self, messages, tools=None):
+            sys_msg = next((m["content"] for m in messages if m["role"] == "system"), None)
+            seen["sys"] = sys_msg
+            return {"role": "assistant", "content": "done"}
+
+    # 任务含 implement → coder
+    mgr = RunManager(None, _Sbx(), RedisStatePort(fake_redis),
+                     executor_factory=lambda b: PrimitiveExecutor(PrimitiveRegistry(), b),
+                     llm=_SpyLLM(), harness_router=_make_router())
+    p = _open_policy()
+    run = await mgr.submit("implement a function", p, "")
+    for _ in range(100):
+        if run.status == "ended":
+            break
+        await asyncio.sleep(0.02)
+    assert seen["sys"] == "YOU ARE A CODER"
+
+    # 纯任务 → generic(默认)
+    seen.clear()
+    mgr2 = RunManager(None, _Sbx(), RedisStatePort(fake_redis),
+                      executor_factory=lambda b: PrimitiveExecutor(PrimitiveRegistry(), b),
+                      llm=_SpyLLM(), harness_router=_make_router())
+    run2 = await mgr2.submit("hello world", p, "")
+    for _ in range(100):
+        if run2.status == "ended":
+            break
+        await asyncio.sleep(0.02)
+    assert seen["sys"] == "GENERIC"
