@@ -1,5 +1,8 @@
 """FastAPI 应用:复刻旧 gateway 的 API 契约,前端零改对接。
-端点见 web-src/src/lib/api.ts + gateway/internal/api/handlers.go。"""
+端点见 web-src/src/lib/api.ts + gateway/internal/api/handlers.go。
+
+有 run_store(RedisRunStore)时,list/get/WS 读外部存储——跨副本可观测(约束6)。
+无 run_store 时,退回进程内 RunManager(单副本开发模式)。"""
 import asyncio
 import os
 from typing import List, Optional
@@ -13,7 +16,7 @@ from cp.server.serialize import event_to_agent_json
 
 
 def create_app(mgr: RunManager, policy_dir: str, sanitization_dir: str,
-               static_dir: Optional[str] = None) -> FastAPI:
+               static_dir: Optional[str] = None, run_store=None) -> FastAPI:
     app = FastAPI(title="AgentOS Control Plane")
 
     @app.get("/api/policies")
@@ -27,6 +30,12 @@ def create_app(mgr: RunManager, policy_dir: str, sanitization_dir: str,
     @app.get("/api/runs")
     async def list_runs(id: Optional[str] = None):
         if id:
+            if run_store:
+                meta = await run_store.get_meta(id)
+                if meta is None:
+                    return JSONResponse({"error": "not found"}, status_code=404)
+                events = await run_store.get_events(id)
+                return {"run": meta, "events": events}
             run = mgr.get(id)
             if run is None:
                 return JSONResponse({"error": "not found"}, status_code=404)
@@ -38,6 +47,8 @@ def create_app(mgr: RunManager, policy_dir: str, sanitization_dir: str,
                 },
                 "events": [event_to_agent_json(e) for e in run.events],
             }
+        if run_store:
+            return await run_store.list_runs()
         return [
             {"run_id": r.run_id, "session_id": r.session_id, "status": r.status,
              "task": r.task, "started_at": r.started_at}
@@ -56,37 +67,74 @@ def create_app(mgr: RunManager, policy_dir: str, sanitization_dir: str,
     async def events_ws(ws: WebSocket):
         await ws.accept()
         run_id = ws.query_params.get("run_id", "")
-        # 先补播历史
-        run = mgr.get(run_id)
-        if run is not None:
-            for e in run.events:
-                await ws.send_json(event_to_agent_json(e))
-            if run.status == "ended":
-                await ws.close()
-                return
-        # 续推实时事件
-        q = mgr.subscribe(run_id)
-        try:
-            while True:
-                try:
-                    e = await asyncio.wait_for(q.get(), timeout=30.0)
-                except asyncio.TimeoutError:
-                    await ws.send_json({"type": "ping"})
-                    continue
-                await ws.send_json(event_to_agent_json(e))
-                if e.type == "run.ended":
-                    break
-        except WebSocketDisconnect:
-            pass
-        finally:
-            mgr.unsubscribe(run_id, q)
-            await ws.close()
+
+        if run_store:
+            await _ws_via_store(ws, run_id, run_store)
+        else:
+            await _ws_via_queue(ws, run_id, mgr)
 
     # 静态前端(若 dist 已构建)
     if static_dir and os.path.isdir(static_dir):
         app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 
     return app
+
+
+async def _ws_via_store(ws: WebSocket, run_id: str, run_store):
+    """跨副本 WS:回放历史(LIST)+ 实时订阅(pub/sub channel)。"""
+    # 补播历史
+    for e in await run_store.get_events(run_id):
+        await ws.send_json(e)
+    meta = await run_store.get_meta(run_id)
+    if meta and meta.get("status") == "ended":
+        await ws.close()
+        return
+    # 实时:订阅 channel
+    pubsub = run_store._r.pubsub()
+    await pubsub.subscribe(run_store.channel(run_id))
+    try:
+        while True:
+            msg = await pubsub.get_message(timeout=1.0)
+            if msg and msg.get("type") == "message":
+                raw = msg["data"]
+                if isinstance(raw, bytes):
+                    raw = raw.decode()
+                import json
+                await ws.send_json(json.loads(raw))
+                if json.loads(raw).get("type") == "run.ended":
+                    break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        await pubsub.unsubscribe(run_store.channel(run_id))
+        await ws.close()
+
+
+async def _ws_via_queue(ws: WebSocket, run_id: str, mgr: RunManager):
+    """单副本 WS:回放历史(run.events)+ 实时订阅(subscriber queue)。"""
+    run = mgr.get(run_id)
+    if run is not None:
+        for e in run.events:
+            await ws.send_json(event_to_agent_json(e))
+        if run.status == "ended":
+            await ws.close()
+            return
+    q = mgr.subscribe(run_id)
+    try:
+        while True:
+            try:
+                e = await asyncio.wait_for(q.get(), timeout=30.0)
+            except asyncio.TimeoutError:
+                await ws.send_json({"type": "ping"})
+                continue
+            await ws.send_json(event_to_agent_json(e))
+            if e.type == "run.ended":
+                break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        mgr.unsubscribe(run_id, q)
+        await ws.close()
 
 
 def _scan_yaml(directory: str) -> List[str]:

@@ -140,3 +140,38 @@ def test_static_dir_mounted(fake_redis):
     r = client.get("/")
     assert r.status_code == 200
     assert "AgentOS" in r.text
+
+
+def test_cross_replica_run_visible_via_store(fake_redis):
+    """副本 A 提交 run;副本 B(独立 RunManager,共享 redis)能读到 run + 事件。"""
+    from cp.server.redis_store import RedisRunStore
+    store = RedisRunStore(fake_redis)
+    sandbox = LocalSandboxExecutor(Registry())
+
+    def _mgr():
+        return RunManager(Registry(), sandbox, RedisStatePort(fake_redis),
+                          executor_factory=lambda b: PrimitiveExecutor(PrimitiveRegistry(), b),
+                          llm=MockLLMClient([{"role": "assistant", "content": "done"}]),
+                          run_store=store)
+
+    pol_dir = tempfile.mkdtemp()
+    with open(os.path.join(pol_dir, "p.yaml"), "w") as f:
+        f.write("permissions: []\nmax_steps: 3\n")
+
+    mgrA = _mgr()
+    appA = create_app(mgrA, pol_dir, tempfile.mkdtemp(), run_store=store)
+    rid = TestClient(appA).post("/api/runs", json={"task": "x", "policy": "p.yaml", "sanitization": ""}).json()["run_id"]
+    _wait_ended(mgrA.get(rid))
+
+    # 副本 B:全新 RunManager(进程内无此 run),共享 redis store
+    mgrB = _mgr()
+    appB = create_app(mgrB, pol_dir, tempfile.mkdtemp(), run_store=store)
+    clientB = TestClient(appB)
+    # list 能看到 A 的 run
+    runs = clientB.get("/api/runs").json()
+    assert any(r["run_id"] == rid for r in runs), "副本 B 看不到 A 的 run"
+    # detail 能读到 A 的事件
+    detail = clientB.get(f"/api/runs?id={rid}").json()
+    assert detail["run"]["run_id"] == rid
+    types = [e["type"] for e in detail["events"]]
+    assert "run.ended" in types
