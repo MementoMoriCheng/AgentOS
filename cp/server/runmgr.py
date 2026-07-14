@@ -63,16 +63,42 @@ class RunManager:
         self._mu = asyncio.Lock()
 
     async def submit(self, task: str, policy_path: str, sanitization_path: str,
-                     max_steps: int = 20) -> Run:
-        """提交 run。用构造时注入的 executor_factory + llm 跑 agent loop。"""
+                     max_steps: int = 20, session_id: str = None) -> Run:
+        """提交 run。用构造时注入的 executor_factory + llm 跑 agent loop。
+        session_id:固定会话 id(用于崩溃恢复:匹配已有 checkpoint 续跑)。"""
         pol = load_policy(policy_path)
         san = load_sanitizer(sanitization_path) if sanitization_path else Sanitizer.new_from_rules([])
         run_id = f"run-{uuid.uuid4().hex[:12]}"
-        session_id = f"sess-{uuid.uuid4().hex[:8]}"
+        if session_id is None:
+            session_id = f"sess-{uuid.uuid4().hex[:8]}"
 
+        # 检查是否有 checkpoint(崩溃恢复续跑)
+        initial_messages = None
         os.makedirs(self.audit_dir, exist_ok=True)
-        ledger = Ledger(os.path.join(self.audit_dir, f"{session_id}.log"))
-        sess = Session.new(session_id, "local", pol, san, ledger)
+        if self.state is not None:
+            from cp.checkpoint import Checkpoint, rehydrate
+            ckpt = Checkpoint(self.state)
+            existing = await ckpt.load_latest(session_id)
+            if existing is not None:
+                async def _pol_loader(p): return pol
+                async def _san_loader(p): return san
+                restored = await rehydrate(existing, _pol_loader, _san_loader)
+                sess = Session(
+                    id=restored["session_id"], identity=restored["identity"],
+                    policy=restored["policy"], gate=restored["gate"],
+                    sanitizer=restored["sanitizer"], account=restored["account"],
+                    ledger=Ledger(os.path.join(self.audit_dir, f"{session_id}.log")),
+                )
+                initial_messages = restored["messages"]
+                remaining = max(1, max_steps - restored["step"])
+            else:
+                sess = Session.new(session_id, "local", pol, san,
+                                   Ledger(os.path.join(self.audit_dir, f"{session_id}.log")))
+                remaining = max_steps
+        else:
+            sess = Session.new(session_id, "local", pol, san,
+                               Ledger(os.path.join(self.audit_dir, f"{session_id}.log")))
+            remaining = max_steps
 
         audit_bus = InProcess()  # 审计/可观测事件(executor/pipeline 用,1 参 publish)
         sandbox_id = await self.sandbox.create({"workspace": "."})
@@ -111,13 +137,15 @@ class RunManager:
             })
 
         await audit_bus.publish(Event(type="run.started", session_id=session_id, run_id=run_id,
-                                      payload={"task": task, "max_steps": max_steps}))
+                                      payload={"task": task, "max_steps": remaining}))
         asyncio.create_task(self._run_agent(run, sess, ctx, executor, audit_bus,
-                                            schemas, system_prompt, on_step, max_steps))
+                                            schemas, system_prompt, on_step, remaining,
+                                            initial_messages))
         return run
 
     async def _run_agent(self, run: Run, sess: Session, ctx: PrimitiveContext, executor,
-                         audit_bus: InProcess, schemas, system_prompt, on_step, max_steps: int):
+                         audit_bus: InProcess, schemas, system_prompt, on_step, max_steps: int,
+                         initial_messages=None):
         release = await self.scheduler.acquire() if self.scheduler else None
         try:
             result = await run_agent_loop(
@@ -126,6 +154,7 @@ class RunManager:
                 system_prompt=system_prompt,
                 on_step=on_step,
                 max_steps=max_steps,
+                initial_messages=initial_messages,
             )
             run.final_answer = result["final_answer"]
             run.termination = result["termination"]
