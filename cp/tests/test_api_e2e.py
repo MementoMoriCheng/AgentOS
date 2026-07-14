@@ -269,3 +269,92 @@ def test_e2e_checkpoint_resume(fake_redis):
     assert snap is not None, "无 checkpoint"
     assert snap.step >= 1
     assert any(m["role"] == "system" for m in snap.messages)
+
+
+# ---------- Week 7 T7 硬里程碑 ----------
+def test_e2e_io_real_request_via_loop(monkeypatch, fake_redis):
+    """agent loop 调 io 原语发真实 HTTP(用 MockTransport,确定性)。"""
+    import httpx
+    from cp.adapters.local_state import RedisStatePort
+    from cp.primitives.executor import PrimitiveExecutor
+    from cp.primitives.io import IoPrimitive
+    from cp.primitives.registry import PrimitiveRegistry
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text='{"ok": true}', headers={"content-type": "application/json"})
+
+    real_init = httpx.AsyncClient.__init__
+
+    def patched_init(self, *a, **kw):
+        kw["transport"] = httpx.MockTransport(handler)
+        kw.pop("timeout", None)
+        real_init(self, *a, **kw)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", patched_init)
+
+    prim = PrimitiveRegistry()
+    prim.register(IoPrimitive())
+    mgr = RunManager(None, _MockSandbox2(), RedisStatePort(fake_redis),
+                     executor_factory=lambda b: PrimitiveExecutor(prim, b),
+        llm=MockLLMClient([
+            {"role": "assistant", "content": "fetch",
+             "tool_calls": [{"id": "1", "type": "function",
+                             "function": {"name": "io",
+                                          "arguments": json.dumps({"method": "GET", "url": "https://api.example.com/data"})}}]},
+            {"role": "assistant", "content": "done"}]),
+        prim_registry=prim)
+    tmp = tempfile.mkdtemp()
+    with open(os.path.join(tmp, "p.yaml"), "w") as f:
+        f.write("permissions:\n"
+                "  - resource_type: http_url\n"
+                "    pattern: 'https://api.example.com/data'\n"
+                "    actions: [io]\n"
+                "max_steps: 5\n")
+    app = create_app(mgr, tmp, tempfile.mkdtemp())
+    rid = TestClient(app).post("/api/runs", json={
+        "task": "fetch", "policy": "p.yaml", "sanitization": ""}).json()["run_id"]
+    run = mgr.get(rid)
+    _wait_ended(run)
+    assert run.status == "ended"
+    io_ev = next((e for e in run.events if e.tool == "io"), None)
+    assert io_ev is not None, "io 未经 executor"
+    assert io_ev.result["status"] == 200
+    assert "ok" in io_ev.result["body"]
+
+
+class _MockSandbox2:
+    async def create(self, c): return "sbx"
+    async def exec_action(self, s, a): return {"data": {}}
+    async def destroy(self, s): pass
+
+
+async def test_e2e_checkpoint_full_resume(fake_redis):
+    """端到端恢复:预置 checkpoint → submit(session_id 匹配) → 续跑完成。"""
+    from cp.adapters.local_state import RedisStatePort
+    from cp.checkpoint import Checkpoint, SessionSnapshot
+    import asyncio
+    state = RedisStatePort(fake_redis)
+    fixed_sid = "sess-milestone-resume"
+    ckpt = Checkpoint(state)
+    # 预置:跑了 1 步
+    await ckpt.save(SessionSnapshot(
+        session_id=fixed_sid, identity="local", used_steps=1, used_tokens=0,
+        messages=[{"role": "system", "content": "sys"},
+                  {"role": "user", "content": "task"},
+                  {"role": "assistant", "content": "was working"}], step=1))
+
+    mgr = RunManager(None, _MockSandbox2(), state,
+                     executor_factory=lambda b: PrimitiveExecutor(PrimitiveRegistry(), b),
+                     llm=MockLLMClient([{"role": "assistant", "content": "resumed done"}]))
+    tmp = tempfile.mkdtemp()
+    with open(os.path.join(tmp, "p.yaml"), "w") as f:
+        f.write("permissions: []\nmax_steps: 5\n")
+    run = await mgr.submit("task", os.path.join(tmp, "p.yaml"), "",
+                           max_steps=5, session_id=fixed_sid)
+    for _ in range(100):
+        if run.status == "ended":
+            break
+        await asyncio.sleep(0.02)
+    assert run.status == "ended"
+    assert run.termination == "completed"
+    assert run.session_id == fixed_sid
