@@ -4,6 +4,10 @@
 
 **当前阶段：MVP（阶段 0 — 安全内核）**。已通过技术验证，含真实 LLM（DeepSeek）端到端 demo。
 
+> ⚠️ **实现状态（2026-07）**：当前实现是 `cp/`（Python 控制面，V2 架构）。`kernel/`、`gateway/`、`runtime/`（Go + 旧 Python 运行时）为 **legacy**，保留作参考，不再开发。下方 Go 架构描述仅作历史背景。
+>
+> **Python 控制面启动：** `conda run -n agentos python -m cp.server.cli serve`（默认 fakeredis + mock LLM，零配置）。HTTP + WebSocket API 复刻旧 gateway 契约，前端 `web-src/` 零改对接。详见 [V2 架构设计](docs/AgentOS架构设计重点关注V2.md)。
+
 ---
 
 ## 为什么需要 AgentOS
@@ -82,7 +86,23 @@ Kernel 的 `EventBus` 是事件枢纽。Runtime 把推理事件（`run.started`�
 
 ```
 AgentOS/
-├── kernel/              # Go 内核（安全 + 调度 + Pipeline）
+├── cp/                  # 【当前实现】Python 控制面（V2 架构）
+│   ├── server/          # FastAPI HTTP + WebSocket 服务层
+│   │   ├── app.py       # 复刻旧 gateway API 契约
+│   │   ├── runmgr.py    # 异步 Run 生命周期 + 事件收集
+│   │   └── cli.py       # python -m cp.server.cli serve
+│   ├── primitives/      # 7 原子原语 + executor + registry
+│   ├── pipeline/        # 6 步统一管道
+│   ├── policy/          # Policy + Gate（权限匹配）
+│   ├── sanitize/        # 脱敏层（第一道防线）
+│   ├── audit/           # hash 链账本
+│   ├── eventbus/        # 异步事件总线
+│   ├── adapters/        # Port 适配器（local_sandbox/state）
+│   ├── orchestration/   # 编排（顺序链 + fan-out/fan-in）
+│   ├── harness/         # V2 Part 2 Harness 适配层
+│   ├── llm/             # DeepSeek + Mock 客户端
+│   └── tests/           # 177 tests（含 8 对抗用例）
+├── kernel/              # 【legacy】Go 内核（安全 + 调度 + Pipeline）
 │   ├── cmd/agentos/     # CLI: agentos serve / audit show
 │   ├── internal/
 │   │   ├── resource/    # Resource{Type,ID} 泛化权限对象
@@ -100,11 +120,11 @@ AgentOS/
 │   └── test/
 │       ├── adversarial/ # 对抗安全测试（8 例，护城河证明）
 │       └── architecture/# 架构验证（开闭原则证明）
-├── gateway/             # Go 网关（HTTP/WS + Run 编排 + 嵌入前端）
-├── runtime/             # Python 运行时（DeepSeek + ReAct）
+├── gateway/             # 【legacy】Go 网关（HTTP/WS + Run 编排 + 嵌入前端）
+├── runtime/             # 【legacy】Python 运行时（DeepSeek + ReAct）
 │   └── agentos_runtime/
-├── web-src/             # React 前端（Vite）
-├── pb/                  # gRPC 契约（.proto 源 + Go 生成代码）
+├── web-src/             # React 前端（Vite，API 契约已被 cp/ 复刻）
+├── pb/                  # 【legacy】gRPC 契约（.proto 源 + Go 生成代码）
 ├── examples/            # demo 工作区 + 策略 + 脱敏规则（受信目录）
 └── docs/superpowers/    # 设计文档 + 实现计划（中文）
 ```
@@ -112,6 +132,34 @@ AgentOS/
 ---
 
 ## 快速开始
+
+### Python 控制面（当前实现，推荐）
+
+```bash
+# 1. 安装依赖（conda 环境名 agentos）
+conda create -n agentos python=3.11 -y && conda activate agentos
+pip install fastapi uvicorn httpx websockets fakeredis redis openai pyyaml pytest pytest-asyncio
+
+# 2. 启动（默认 fakeredis + mock LLM，零配置）
+conda run -n agentos python -m cp.server.cli serve
+# → http://127.0.0.1:8080
+
+# 3. 真实 LLM（可选）
+export DEEPSEEK_API_KEY="sk-你的key"
+conda run -n agentos python -m cp.server.cli serve --llm real
+
+# 4. 前端（可选，构建后托管在根路径）
+cd web-src && npm install && npm run build && cd ..
+# 重新启动 server，根路径自动托管 web-src/dist
+
+# 5. 测试
+conda run -n agentos python -m pytest cp/ -q          # 全回归
+conda run -n agentos python -m pytest cp/tests/adversarial/ -v  # 8 对抗用例
+```
+
+---
+
+### 环境要求（legacy Go，仅供参考）
 
 ### 环境要求
 
