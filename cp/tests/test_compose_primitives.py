@@ -14,3 +14,11 @@ async def test_compose_make_context(fake_redis):
     ctx = make_primitive_context(cp, session=None, sandbox_id="sbx")
     assert ctx.sandbox_id == "sbx"
     assert ctx.state is not None
+
+
+async def test_compose_has_harness_router(fake_redis):
+    cp = build_control_plane(fake_redis)
+    assert "harness_router" in cp
+    # claude-style + generic should be loaded
+    profile = cp["harness_router"].route("refactor code")
+    assert profile.name in ("claude-style", "generic")
