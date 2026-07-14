@@ -59,7 +59,8 @@ class RunManager:
                  prim_registry=None,      # 用于 schemas() 喂给 LLM
                  scheduler=None,          # T4:并发限流
                  harness_router=None,     # T5:选 system_prompt
-                 run_store=None):         # T6:Run 元数据/事件外部存储
+                 run_store=None,          # T6:Run 元数据/事件外部存储
+                 run_lease=None):         # Week8:Run 执行租约(跨副本互斥)
         self.registry = registry
         self.sandbox = sandbox
         self.state = state
@@ -71,6 +72,7 @@ class RunManager:
         self.scheduler = scheduler
         self.harness_router = harness_router
         self.run_store = run_store
+        self.run_lease = run_lease
         self._runs: Dict[str, Run] = {}
         self._mu = asyncio.Lock()
 
@@ -163,6 +165,22 @@ class RunManager:
     async def _run_agent(self, run: Run, sess: Session, ctx: PrimitiveContext, executor,
                          audit_bus: InProcess, schemas, system_prompt, on_step, max_steps: int,
                          initial_messages=None):
+        # 执行租约:只有一个副本能跑(Week8 约束6)。拿不到 -> 标 leased_elsewhere 不执行。
+        if self.run_lease is not None:
+            if not await self.run_lease.acquire(run.run_id):
+                run.termination = "leased_elsewhere"
+                run.final_answer = "run is being executed by another replica"
+                await self._finalize(run, audit_bus)
+                return
+            # 续租心跳:包装 on_step,每步续租(无论是否另存 checkpoint 的 on_step)
+            _orig_on_step = on_step
+
+            async def _on_step_with_lease(messages, step):
+                await self.run_lease.renew(run.run_id)
+                if _orig_on_step is not None:
+                    await _orig_on_step(messages, step)
+            on_step = _on_step_with_lease
+
         release = await self.scheduler.acquire() if self.scheduler else None
         try:
             result = await run_agent_loop(
@@ -181,17 +199,23 @@ class RunManager:
         finally:
             if release:
                 release()
-            await audit_bus.publish(Event(
-                type="run.ended", session_id=run.session_id, run_id=run.run_id,
-                payload={"termination": run.termination, "final_answer": run.final_answer},
-            ))
-            if self.run_store:
-                await self.run_store.save_meta(run.run_id, {
-                    "run_id": run.run_id, "session_id": run.session_id, "task": run.task,
-                    "status": "ended", "started_at": run.started_at,
-                    "final_answer": run.final_answer, "termination": run.termination,
-                })
-            run.status = "ended"
+            if self.run_lease is not None:
+                await self.run_lease.release(run.run_id)
+            await self._finalize(run, audit_bus)
+
+    async def _finalize(self, run: Run, audit_bus: InProcess) -> None:
+        """收尾:发 run.ended + 存 meta + 标 ended。正常结束与 leased_elsewhere 共用。"""
+        await audit_bus.publish(Event(
+            type="run.ended", session_id=run.session_id, run_id=run.run_id,
+            payload={"termination": run.termination, "final_answer": run.final_answer},
+        ))
+        if self.run_store:
+            await self.run_store.save_meta(run.run_id, {
+                "run_id": run.run_id, "session_id": run.session_id, "task": run.task,
+                "status": "ended", "started_at": run.started_at,
+                "final_answer": run.final_answer, "termination": run.termination,
+            })
+        run.status = "ended"
 
     def _select_system_prompt(self, task: str) -> Optional[str]:
         """T5:HarnessRouter 按 task_keywords 选 profile 的 system_prompt。"""
