@@ -30,3 +30,23 @@ async def test_llm_primitive_with_real_client():
     })
     assert result.status == "success"
     assert result.data["content"]
+
+
+async def test_real_llm_agent_loop():
+    """真实 DeepSeek 跑完整 Agent Loop(无工具,单轮问答)。
+    这是 HTTP 服务层 run_agent_loop 入口的真实端到端验证。"""
+    import tempfile
+    from cp.agent_loop import run_agent_loop
+    from cp.audit.ledger import Ledger
+    from cp.policy.policy import Policy
+    from cp.sanitize.sanitizer import Sanitizer
+    from cp.session.session import Session
+    from cp.llm.deepseek import AsyncDeepSeekClient
+    llm = AsyncDeepSeekClient()
+    with tempfile.TemporaryDirectory() as d:
+        sess = Session.new("s1", "local",
+                           Policy(permissions=[], max_steps=3, max_tokens=1000),
+                           Sanitizer.new_from_rules([]), Ledger(os.path.join(d, "a.log")))
+        result = await run_agent_loop("Reply with exactly: hello world", llm, None, sess, None, [])
+        assert result["termination"] == "completed"
+        assert "hello" in result["final_answer"].lower()
