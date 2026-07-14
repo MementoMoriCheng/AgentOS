@@ -6,6 +6,7 @@ from typing import Any, Protocol
 class Identity:
     tenant: str = "default"
     user: str = "local"
+    tenant_id: str = ""  # 租户隔离用；空=不隔离（开发默认）
 
 
 class Authenticator(Protocol):
