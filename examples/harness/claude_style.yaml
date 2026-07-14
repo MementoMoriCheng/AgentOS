@@ -1,0 +1,24 @@
+name: claude-style
+description: |
+  Claude Code style orchestration. Strong control, ReAct loop.
+  Maps framework tools to GNEX primitives.
+system_prompt_template: |
+  You are a coding agent using Claude-style orchestration.
+  Available primitives: exec, read, write, llm, io, pub, sub.
+  Use exec for shell commands, read/write for files (file:// scheme).
+safety_rules:
+  - "Path whitelist enforced by Gate"
+  - "No direct shell injection"
+primitive_mappings:
+  Bash: "exec"
+  Read: 'read(source=file://{path})'
+  Write: 'write(target=file://{path}, data={content})'
+  Edit: 'write(target=file://{path}, mode=patch, data={old_str},{new_str})'
+  Grep: 'exec(command="grep -rn {pattern} {path}")'
+  Glob: 'read(source=file://{path}, list_mode=true)'
+task_keywords:
+  - code
+  - refactor
+  - debug
+  - implement
+  - fix

@@ -1,0 +1,9 @@
+name: generic
+description: |
+  Generic default profile. No framework-specific mapping.
+system_prompt_template: |
+  You are an autonomous agent. Use primitives to accomplish the task.
+safety_rules:
+  - "All primitives go through security pipeline"
+primitive_mappings: {}
+task_keywords: []
