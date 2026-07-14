@@ -76,3 +76,34 @@ async def test_pub_primitive_does_not_crash_with_redis_bus(fake_redis):
     r = await PubPrimitive().execute(ctx, {"topic": "t.x", "payload": {"a": 1}})
     assert r.status == "success"
     assert len(await fake_redis.xrange("t.x")) == 1
+
+
+# ---------- T4: Scheduler 并发限流 ----------
+async def test_scheduler_gates_concurrency(fake_redis):
+    """Scheduler(max_concurrent=1) 让 3 个 run 串行执行(max_concurrent 永远≤1)。"""
+    from cp.scheduler.scheduler import Scheduler
+
+    class _SlowLLM:
+        def __init__(self):
+            self.entered = 0
+            self.max_concurrent = 0
+
+        async def chat(self, messages, tools=None):
+            self.entered += 1
+            self.max_concurrent = max(self.max_concurrent, self.entered)
+            await asyncio.sleep(0.05)
+            self.entered -= 1
+            return {"role": "assistant", "content": "done"}
+
+    slow = _SlowLLM()
+    mgr = RunManager(None, _Sbx(), RedisStatePort(fake_redis),
+                     executor_factory=lambda b: PrimitiveExecutor(PrimitiveRegistry(), b),
+                     llm=slow, scheduler=Scheduler(max_concurrent=1))
+    p = _open_policy()
+    runs = [await mgr.submit(f"t{i}", p, "") for i in range(3)]
+    for _ in range(300):
+        if all(r.status == "ended" for r in runs):
+            break
+        await asyncio.sleep(0.02)
+    assert all(r.status == "ended" for r in runs)
+    assert slow.max_concurrent == 1  # 串行,并发槽=1
