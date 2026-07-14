@@ -1,8 +1,8 @@
 """架构验证:开闭原则。加新工具只需实现 Tool 接口 + 注册,核心(Pipeline/Gate)零改。
 移植自 kernel/test/architecture/open_closed_test.go。"""
-import json
 import tempfile
 
+from cp.adapters.local_sandbox import LocalSandboxExecutor
 from cp.audit.ledger import Ledger
 from cp.eventbus.bus import InProcess
 from cp.pipeline.pipeline import Pipeline
@@ -25,7 +25,7 @@ class DBQueryStub:
     def permission_key(self, params):
         return Resource(type="db_table", id=params.get("table", ""))
 
-    def execute(self, ctx, params):
+    async def execute(self, ctx, params):
         return ToolResult(data={"rows": [{"id": 1}]})
 
 
@@ -35,31 +35,37 @@ def _session(rules):
         return Session.new("arch-test", "local", pol, Sanitizer.new_from_rules([]), Ledger(d + "/a.log"))
 
 
-def test_open_closed_adding_new_tool_requires_zero_kernel_changes():
+async def test_open_closed_adding_new_tool_requires_zero_kernel_changes():
     sess = _session([Rule("db_table", "sales.orders", ["db_query"])])
     reg = Registry()
     reg.register(DBQueryStub())  # 注册新工具——唯一新增的代码
     bus = InProcess()
-    pipe = Pipeline(reg, bus)
+    sandbox = LocalSandboxExecutor(reg)
+    sid = await sandbox.create({})
+    pipe = Pipeline(reg, bus, sandbox)
 
     # 允许查询 sales.orders(Gate 用 db_table 规则匹配,无需认识 db_query 工具)
-    resp = pipe.call(sess, "db_query", {"table": "sales.orders"})
+    resp = await pipe.call(sess, sid, "db_query", {"table": "sales.orders"})
     assert resp.allowed
     assert len(resp.result["rows"]) == 1
 
     # 拒绝查询未授权的表(finance.salaries 不匹配 sales.orders 模式)
-    resp = pipe.call(sess, "db_query", {"table": "finance.salaries"})
+    resp = await pipe.call(sess, sid, "db_query", {"table": "finance.salaries"})
     assert not resp.allowed
 
 
-def test_open_closed_new_tool_publishes_events():
+async def test_open_closed_new_tool_publishes_events():
     sess = _session([Rule("db_table", "sales.orders", ["db_query"])])
     reg = Registry()
     reg.register(DBQueryStub())
     bus = InProcess()
-    pipe = Pipeline(reg, bus)
+    sandbox = LocalSandboxExecutor(reg)
+    sid = await sandbox.create({})
+    pipe = Pipeline(reg, bus, sandbox)
 
     saw = []
-    bus.subscribe(lambda e: saw.append(e))
-    pipe.call(sess, "db_query", {"table": "sales.orders"})
+    async def handler(e):
+        saw.append(e)
+    bus.subscribe(handler)
+    await pipe.call(sess, sid, "db_query", {"table": "sales.orders"})
     assert any(e.type == "tool.called" and e.tool == "db_query" for e in saw)

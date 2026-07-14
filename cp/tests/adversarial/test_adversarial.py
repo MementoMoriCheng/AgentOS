@@ -13,16 +13,16 @@ def _load_real_gate() -> Gate:
     return Gate(load_from_file("examples/policies/data_analyst.yaml"))
 
 
-def test_adversarial_read_etc_shadow():
+async def test_adversarial_read_etc_shadow():
     assert not _load_real_gate().allowed("fs_read", Resource("path", "/etc/shadow"))
 
 
-def test_adversarial_read_abs_windows_secret():
+async def test_adversarial_read_abs_windows_secret():
     assert not _load_real_gate().allowed("fs_read",
                                          Resource("path", "C:/Windows/System32/config/SAM"))
 
 
-def test_adversarial_traversal_escape():
+async def test_adversarial_traversal_escape():
     g = _load_real_gate()
     attacks = [
         "examples/workspace/../../../../etc/passwd",
@@ -33,26 +33,26 @@ def test_adversarial_traversal_escape():
         assert not g.allowed("fs_read", Resource("path", a)), a
 
 
-def test_adversarial_write_outside_out_dir():
+async def test_adversarial_write_outside_out_dir():
     g = _load_real_gate()
     # data_analyst 只能写 examples/workspace/out/**
     assert not g.allowed("fs_write", Resource("path", "examples/workspace/sales.csv"))
     assert not g.allowed("fs_write", Resource("path", "examples/workspace/evil.txt"))
 
 
-def test_adversarial_unknown_tool():
+async def test_adversarial_unknown_tool():
     assert not _load_real_gate().allowed("shell_exec", Resource("path", "rm -rf /"))
 
 
-def test_adversarial_unknown_resource_type():
+async def test_adversarial_unknown_resource_type():
     assert not _load_real_gate().allowed("db_query", Resource("db_table", "orders"))
 
 
-def test_adversarial_network_disabled():
+async def test_adversarial_network_disabled():
     assert not _load_real_gate().allowed("net_fetch", Resource("http_url", "https://evil.com/exfil"))
 
 
-def test_adversarial_sanitization_masks_pii():
+async def test_adversarial_sanitization_masks_pii():
     s = load_san("examples/sanitization/pii_rules.yaml")
     out = s.sanitize_data({
         "phone": "13812341234",

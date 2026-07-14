@@ -16,55 +16,58 @@ class PipelineResponse:
 
 
 class Pipeline:
-    """6 步统一管道。控制面核心只调它,不认识任何具体工具。
+    """6 步统一管道(async)。控制面核心只调它,不认识任何具体工具。
 
-    步骤:查找 → 提取权限 → 权限检查 → 资源扣减 → 执行 → 脱敏 → 审计(事件)。
+    步骤:查找 → 提取权限 → 权限检查 → 资源扣减 → 执行(经 SandboxPort)→ 脱敏 → 审计(事件)。
+    编排器不直接 execute(ch15 约束7);执行委托给 SandboxPort。
     """
 
-    def __init__(self, registry: Registry, bus: Bus):
+    def __init__(self, registry: Registry, bus: Bus, sandbox):
         self.registry = registry
         self.bus = bus
+        self.sandbox = sandbox
 
-    def call(self, sess: Session, tool_name: str, params: Dict[str, Any]) -> PipelineResponse:
-        # 步骤 1:查找工具。未知工具 = 拒绝(不泄露工具清单细节)。
+    async def call(self, sess: Session, sandbox_id: str, tool_name: str, params: Dict[str, Any]) -> PipelineResponse:
+        # 步骤 1:查找工具。未知工具 = 拒绝。
         tool, ok = self.registry.get(tool_name)
         if not ok:
-            self.bus.publish(Event(type="tool.denied", session_id=sess.id, tool=tool_name, params=params))
+            await self.bus.publish(Event(type="tool.denied", session_id=sess.id, tool=tool_name, params=params))
             return PipelineResponse(allowed=False, message="permission denied")
 
-        # 步骤 2:提取权限资源(工具自描述)。
+        # 步骤 2:提取权限资源(纯计算,不需 sandbox)。
         res = tool.permission_key(params)
 
-        # 步骤 3:权限检查。不通过 → 拒绝 + 审计(拒绝原因不回传,防泄露)。
+        # 步骤 3:权限检查。
         if not sess.gate.allowed(tool_name, res):
-            self.bus.publish(Event(type="tool.denied", session_id=sess.id, tool=tool_name, params=params))
+            await self.bus.publish(Event(type="tool.denied", session_id=sess.id, tool=tool_name, params=params))
             return PipelineResponse(allowed=False, message="permission denied")
 
-        # 步骤 3.5:资源扣减。超限 → 硬终止 + quota.exceeded 事件。
+        # 步骤 3.5:资源扣减。
         try:
-            sess.account.charge(Usage(steps=1))
+            await sess.account.charge(Usage(steps=1))
         except QuotaExceeded:
-            self.bus.publish(Event(type="quota.exceeded", session_id=sess.id, tool=tool_name, params=params))
+            await self.bus.publish(Event(type="quota.exceeded", session_id=sess.id, tool=tool_name, params=params))
             return PipelineResponse(errored=True, message="quota exceeded")
 
-        # 步骤 4:执行工具。
-        try:
-            result = tool.execute(None, params)
-        except Exception:
-            self.bus.publish(Event(type="tool.errored", session_id=sess.id, tool=tool_name, params=params))
+        # 步骤 4:执行——经 SandboxPort(不直接 tool.execute!)约束7
+        action = {"tool": tool_name, "params": params}
+        exec_result = await self.sandbox.exec_action(sandbox_id, action)
+        if "error" in exec_result:
+            await self.bus.publish(Event(type="tool.errored", session_id=sess.id, tool=tool_name, params=params))
             return PipelineResponse(errored=True, message="tool error")
+        result_data = exec_result["data"]
 
-        # 步骤 5:脱敏(第一道安全防线,独立于工具)。保留摘要进事件。
+        # 步骤 5:脱敏。
         san_summary = []
         if sess.sanitizer is not None:
-            sr = sess.sanitizer.sanitize(result.data)
-            result.data = sr.data
+            sr = sess.sanitizer.sanitize(result_data)
             san_summary = [FieldSanitization(field=f.field, strategy=f.strategy) for f in sr.summary]
+            result_data = sr.data
 
-        # 步骤 6:审计(通过事件触发 AuditSubscriber,不散落)。含脱敏摘要。
-        self.bus.publish(Event(
+        # 步骤 6:审计事件(含脱敏摘要)。
+        await self.bus.publish(Event(
             type="tool.called", session_id=sess.id, tool=tool_name,
-            params=params, result=result.data, sanitize=san_summary,
+            params=params, result=result_data, sanitize=san_summary,
         ))
 
-        return PipelineResponse(allowed=True, result=result.data)
+        return PipelineResponse(allowed=True, result=result_data)
