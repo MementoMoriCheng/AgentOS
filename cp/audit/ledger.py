@@ -1,7 +1,7 @@
+import asyncio
 import hashlib
 import json
 import os
-import threading
 import time
 from dataclasses import dataclass, asdict
 from typing import List, Optional
@@ -26,24 +26,30 @@ class Ledger:
     """append-only、hash 链的审计日志。"""
 
     def __init__(self, path: str):
-        self._mu = threading.Lock()
+        self._mu = asyncio.Lock()
         self.path = path
         self.last_hash = GENESIS_HASH
-        # 若文件已存在,加载最后一条的 hash 作为链尾
+        # 若文件已存在,加载最后一条的 hash 作为链尾(构造在事件循环外,同步读)
         if os.path.exists(path):
-            for e in self.read_all():
+            for e in self._read_all_sync():
                 self.last_hash = e.hash
 
-    def append(self, e: Entry) -> None:
-        with self._mu:
+    async def append(self, e: Entry) -> None:
+        async with self._mu:
             e.timestamp_nano = time.time_ns()
             e.prev_hash = self.last_hash
             e.hash = _compute_hash(e.prev_hash, e)
-            with open(self.path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(asdict(e)) + "\n")
+            await asyncio.to_thread(self._write_line, e)
             self.last_hash = e.hash
 
-    def read_all(self) -> List[Entry]:
+    async def read_all(self) -> List[Entry]:
+        return await asyncio.to_thread(self._read_all_sync)
+
+    def _write_line(self, e: Entry) -> None:
+        with open(self.path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(asdict(e)) + "\n")
+
+    def _read_all_sync(self) -> List[Entry]:
         if not os.path.exists(self.path):
             return []
         out = []

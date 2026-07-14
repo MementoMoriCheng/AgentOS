@@ -7,11 +7,11 @@ from cp.eventbus.bus import Bus, Event
 def register_audit_subscriber(ledger: Ledger, bus: Bus) -> None:
     """让 ledger 订阅 bus 上的相关事件并写审计。审计逻辑的唯一集中点。"""
 
-    def _on_event(e: Event) -> None:
+    async def _on_event(e: Event) -> None:
         outcome = _outcome_for(e.type)
         if outcome == "":
             return  # 不审计的事件类型
-        ledger.append(Entry(
+        await ledger.append(Entry(
             session_id=e.session_id,
             tool=e.tool,
             params_json=json.dumps(e.params, default=str),
