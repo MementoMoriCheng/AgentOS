@@ -2,8 +2,8 @@ import os
 import pytest
 
 pytestmark = pytest.mark.skipif(
-    not os.environ.get("DEEPSEEK_API_KEY"),
-    reason="DEEPSEEK_API_KEY not set (integration test)",
+    not (os.environ.get("DEEPSEEK_API_KEY") and os.environ.get("RUN_INTEGRATION")),
+    reason="integration test: set DEEPSEEK_API_KEY + RUN_INTEGRATION=1 to run",
 )
 
 
